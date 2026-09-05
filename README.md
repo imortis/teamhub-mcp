@@ -17,12 +17,14 @@ The usual workaround — `git pull`, then tell your agent "analyze this and buil
 
 ```bash
 cd your-repo
-npx -y hub-server init      # scaffolds .mcp.json, .claude/settings.json, hooks/
+npx -y teamhub-mcp init      # scaffolds .mcp.json, .claude/settings.json, hooks/
 ```
 
-`npx -y` means no global install, no build step, nothing to keep updated — every invocation runs the current published version, cold-start is under 2 seconds. `init` never overwrites an existing file unless you pass `--force`, and if `.claude/settings.json` already exists it merges hub's hooks in rather than clobbering whatever else your team has configured.
+The npm **package** is `teamhub-mcp`; the CLI **command** it installs is `hub-server` (there's already an unrelated package literally named `hub-server` on npm, so `npx -y hub-server` would silently fetch the wrong thing — always invoke it as `npx -y teamhub-mcp <command>`, or install it persistently first, see below).
 
-Commit what `init` creates, so teammates who clone the repo get the same setup automatically. `hub-server dashboard` prints a human-readable snapshot from the terminal any time, without going through an agent at all.
+`npx -y` means no global install, no build step, nothing to keep updated — every invocation runs the current published version, cold-start is under 2 seconds. `init` never overwrites an existing file unless you pass `--force`, and if `.claude/settings.json` already exists it merges hub's hooks in rather than clobbering whatever else your team has configured. The `.mcp.json` it writes also invokes the server via `npx -y teamhub-mcp` (not a bare `hub-server` command), so it works whether or not anyone on the team ever did a persistent install.
+
+Commit what `init` creates, so teammates who clone the repo get the same setup automatically. `npx -y teamhub-mcp dashboard` prints a human-readable snapshot from the terminal any time, without going through an agent at all (or just `hub-server dashboard` if you've installed it persistently, see below — hook scripts try that fast path first and fall back to npx automatically).
 
 **Developing locally instead of using the published package:**
 

@@ -1,15 +1,23 @@
-// Cross-platform-safe way to invoke the `hub-server` CLI from a hook script.
+// Cross-platform-safe way to invoke the hub-server CLI from a hook script.
 //
-// On Windows, npm's global bin for hub-server is a .cmd batch wrapper, and
-// Node's child_process cannot execute .cmd/.bat files without a shell -
-// this is documented Node/Windows behavior, not a bug. Naively passing
-// `shell: true` together with a separate args array is what Node itself
-// warns is unsafe ("arguments are not escaped, only concatenated"), so on
-// Windows we build one fully-escaped command string ourselves and run that
-// as a single unit instead - no separate unescaped args array involved.
+// Tries the bare `hub-server` command first (fast - works if it's on PATH
+// via a persistent global install or `npm link`), falling back to
+// `npx -y teamhub-mcp` if that's not found - so someone who only ever ran
+// `npx -y teamhub-mcp init` (no persistent install) still works, just with
+// npx's ~1-2s cold-start instead of an instant command. This matters more
+// here than in the main MCP server config: hooks like PreToolUse can fire
+// on every single edit, so the fast path is worth having, not just the
+// npx fallback.
 //
-// On POSIX, hub-server's shebang script is directly executable - no shell
-// needed at all.
+// On Windows, npm's global bin for hub-server is a .cmd batch wrapper (and
+// npx itself resolves through one too), and Node's child_process cannot
+// execute .cmd/.bat files without a shell - this is documented Node/Windows
+// behavior, not a bug. Naively passing `shell: true` together with a
+// separate args array is what Node itself warns is unsafe ("arguments are
+// not escaped, only concatenated"), so on Windows we build one fully-
+// escaped command string ourselves and run that as a single unit instead.
+//
+// On POSIX, these are directly executable - no shell needed at all.
 
 import { execFileSync, execSync } from "node:child_process";
 
@@ -19,12 +27,21 @@ function quoteForWindowsShell(arg) {
   return '"' + String(arg).replace(/"/g, '""') + '"';
 }
 
-export function runHubServer(args, opts = {}) {
-  const baseOpts = { encoding: "utf8", timeout: 10000, ...opts };
-
+function run(command, args, opts) {
   if (process.platform === "win32") {
-    const command = ["hub-server", ...args.map(quoteForWindowsShell)].join(" ");
-    return execSync(command, baseOpts);
+    const full = [command, ...args.map(quoteForWindowsShell)].join(" ");
+    return execSync(full, opts);
   }
-  return execFileSync("hub-server", args, baseOpts);
+  return execFileSync(command, args, opts);
+}
+
+export function runHubServer(args, opts = {}) {
+  const baseOpts = { encoding: "utf8", timeout: 15000, ...opts };
+  try {
+    return run("hub-server", args, baseOpts);
+  } catch (err) {
+    // ENOENT (POSIX) / "not recognized" (Windows via cmd.exe) - not
+    // installed globally. Fall back to npx.
+    return run("npx", ["-y", "teamhub-mcp", ...args], baseOpts);
+  }
 }

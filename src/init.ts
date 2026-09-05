@@ -26,9 +26,16 @@ function copyTree(src: string, dest: string, force: boolean, report: string[]): 
   }
 }
 
+// `npx -y teamhub-mcp` rather than a bare `hub-server` command: the MCP
+// server process is spawned once per session, so the ~1-2s npx cold-start
+// is a one-time cost, and this way the config works whether or not the
+// user ever did a persistent install - the same pattern Playwright's own
+// MCP config uses (`npx -y @playwright/mcp`). A bare `hub-server` command
+// only works for someone who ran `npm link`/a global install; someone who
+// only ran `npx -y teamhub-mcp init` would have nothing on PATH otherwise.
 const DEFAULT_MCP_JSON = {
   mcpServers: {
-    hub: { type: "stdio", command: "hub-server", args: [] },
+    hub: { type: "stdio", command: "npx", args: ["-y", "teamhub-mcp"] },
   },
 };
 
