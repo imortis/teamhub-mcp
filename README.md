@@ -1,143 +1,137 @@
 # teamhub-mcp
 
-**Shared context for teams whose members each use their own AI coding agent — Claude Code, Cursor, Antigravity, OpenCode, whatever — on the same repo.**
+Shared context for teams where everyone uses their own AI coding agent — Claude Code, Cursor, Antigravity, OpenCode, doesn't matter which — on the same repo.
 
 [![npm version](https://img.shields.io/npm/v/teamhub-mcp.svg)](https://www.npmjs.com/package/teamhub-mcp)
 [![license](https://img.shields.io/npm/l/teamhub-mcp.svg)](./LICENSE)
 
-## The problem
+## Why this exists
 
-When everyone on a team runs an independent AI agent session, nobody's agent knows what a teammate already decided, what they're building right now, or why a file looks the way it does. People quietly duplicate or overwrite each other's work, and one person ends up doing everything because AI-assisted parallel work silently breaks down.
+If everyone on your team is running their own AI agent session, nobody's agent knows what a teammate already decided, what they're building right now, or why some file looks the way it does. People end up duplicating each other's work or quietly stepping on it, and eventually one person is doing everything by hand because the AI-assisted parallel work just doesn't hold together.
 
-The usual workaround — `git pull`, then tell your agent "analyze this and build X" — puts the burden back on a human to re-explain context every single handoff, and different models (Claude vs. Gemini vs. GPT) frequently draw different conclusions from the same prose summary anyway.
+The normal fix is `git pull`, then tell your agent "look at this and build X" — which just moves the burden back onto a human, every single handoff. And it gets worse when teammates use different models: Claude, Gemini, and GPT will happily draw different conclusions from the same paragraph of context.
 
-**teamhub-mcp is git-native — no hosted service, no server to run, no login.** It's a small MCP server (CLI command: `hub-server`) each teammate runs *locally*, pointed at their own clone. State lives as plain JSON files under `.hub/` inside the repo itself, and syncs the same way your code does: `git push` / `git pull`. Having repo access *is* having access — there's no separate workspace ID or auth token to set up.
+teamhub-mcp is git-native. No hosted backend, nothing to deploy, no account to make. It's a small MCP server that each person runs locally against their own clone (the CLI is called `hub-server`). State is just JSON files under `.hub/` in the repo, and it moves around the same way your code does — `git push`, `git pull`. If you have access to the repo, you have access to the shared context. There's no separate workspace ID or token to hand out.
 
-## Quickstart
+## Getting started
 
 ```bash
 cd your-repo
-npx -y teamhub-mcp init      # scaffolds .mcp.json, .claude/settings.json, hooks/
+npx -y teamhub-mcp init
 ```
 
-The npm **package** is `teamhub-mcp`; the CLI **command** it installs is `hub-server` (there's already an unrelated package literally named `hub-server` on npm, so `npx -y hub-server` would silently fetch the wrong thing — always invoke it as `npx -y teamhub-mcp <command>`, or install it persistently first, see below).
+That scaffolds `.mcp.json`, `.claude/settings.json`, and the hook scripts into your repo. One thing worth knowing: the npm package is `teamhub-mcp`, but the command it installs is `hub-server` — there's already an unrelated package called `hub-server` on npm, so typing `npx -y hub-server` will silently grab the wrong thing. Stick to `npx -y teamhub-mcp <command>`.
 
-`npx -y` means no global install, no build step, nothing to keep updated — every invocation runs the current published version, cold-start is under 2 seconds. `init` never overwrites an existing file unless you pass `--force`, and if `.claude/settings.json` already exists it merges hub's hooks in rather than clobbering whatever else your team has configured. The `.mcp.json` it writes also invokes the server via `npx -y teamhub-mcp` (not a bare `hub-server` command), so it works whether or not anyone on the team ever did a persistent install.
+`init` won't clobber anything — it skips files that already exist unless you pass `--force`, and if you already have a `.claude/settings.json` it merges the hooks in rather than overwriting whatever else you've got configured there. Commit whatever it creates so teammates get the same setup the moment they clone the repo.
 
-Commit what `init` creates, so teammates who clone the repo get the same setup automatically. `npx -y teamhub-mcp dashboard` prints a human-readable snapshot from the terminal any time, without going through an agent at all (or just `hub-server dashboard` if you've installed it persistently, see below — hook scripts try that fast path first and fall back to npx automatically).
+Want to poke at it without going through an agent? `npx -y teamhub-mcp dashboard` prints a plain-text summary of the current tasks and activity.
 
-**Developing locally instead of using the published package:**
+If you're working on teamhub-mcp itself rather than using the published package:
 
 ```bash
-npm install && npm run build && npm link   # puts `hub-server` on PATH
-cd your-repo && hub-server init            # same scaffolding, using the local build
+npm install && npm run build && npm link
+cd your-repo && hub-server init
 ```
 
-## What every agent session gets
+## What you actually get
 
-- **A living plan**, not just a task list — `requirements.md` (the why/what) and `design.md` (the architecture/how), continuously updated and read by every joining agent, so the big picture doesn't live only in one person's head or one chat transcript.
-- **Structured completion reports, not prose summaries** — when a task is marked done, the builder fills a fixed schema (what was built, key decisions + why + alternatives considered, files changed + purpose, known limitations, next steps) instead of a freeform paragraph. This matters specifically because your teammates' agents may be *different models* — free text gets reinterpreted differently by each reader; a fixed structure stays consistent regardless of which model wrote it or reads it.
-- **Anchor-verified file history** — every file note is pinned to the commit it was written against, and re-checked on every read: `verified` (untouched since), `changed` (re-read the file before trusting the note), or `gone`. A summary that's silently gone stale is worse than no summary.
-- **One deterministic handoff call** (`get_handoff_brief`) that assembles requirements + design + active tasks + recent structured completions + anchor-verified file history in a single payload, auto-injected via hooks — every agent gets the *same* assembled context regardless of harness or model, instead of each one deciding for itself how much context is worth digging up.
-- **Real conflict detection, not just declared-task overlap** — `declare_task` checks both other declared tasks *and* actual recent git commits touching the same scope, so it catches a teammate mid-edit even if they never declared anything.
-- **A repo-aware identity** — at session start, teamhub-mcp asks which GitHub repo you're working on (via MCP's `elicitation` protocol) and resolves that to your local clone. Whoever answers with the same repo URL is automatically on the same team; no workspace ID to invent or share.
+- **A living plan, not just a to-do list.** `requirements.md` and `design.md` live in `.hub/plan/` and get updated as the project evolves, so the big picture isn't stuck in one person's head or buried in a chat transcript somewhere.
+- **Completion reports with a fixed shape, not a paragraph.** When someone finishes a task, they fill in what was built, the decisions they made and why, which files changed, known gaps, and what's next — as structured fields, not prose. The reason this matters more than it sounds: if your teammates are on different models, free text gets reinterpreted differently by whoever reads it next. A fixed shape doesn't have that problem.
+- **File notes that check their own freshness.** Every note about a file is pinned to the commit it was written against. Read it later and it'll tell you `verified` (nothing's changed), `changed` (go re-read the file, don't trust this blindly), or `gone`. A note that's quietly out of date is worse than no note at all.
+- **One call that gets you everything.** `get_handoff_brief` bundles the plan, open tasks, recent completions, and file history into a single response, and it's what gets auto-injected at session start. The point is that it's the same for everyone — nobody's agent has to decide on the fly how much digging is "enough."
+- **Conflict detection that looks at real git history, not just declared tasks.** `declare_task` checks other declared tasks *and* actual recent commits touching the same files, so it catches a teammate who's mid-edit even if they never bothered to declare anything.
+- **You just tell it which repo you're working on.** At session start it asks (via MCP's elicitation feature) which GitHub repo you're on, and figures out your local clone from there. Whoever's working on the same repo is on the same team — nothing extra to set up.
 
-Handoff is sequential (one agent finishes, another continues later, then `git pull`s), not simultaneous real-time editing — so a structured, git-synced provenance log is enough. No CRDTs, no merge-conflict machinery beyond git's own, no live messaging channel (deliberately researched and skipped — see below).
+Handoffs here are sequential — one person finishes and pushes, the next person pulls and continues — not simultaneous editing, so a plain git-synced log is enough to keep everyone in sync. No CRDTs, no custom merge logic, and (after actually looking into it) no live messaging between agents either — more on that below.
 
-## How state is stored
+## How the data is laid out
 
 ```
 your-repo/
   .hub/
-    plan/requirements.md             the why/what - continuously updated
-    plan/design.md                   the architecture/how - continuously updated
-    tasks/<taskId>.json              one file per task (completion is structured, see below)
+    plan/requirements.md             the why/what
+    plan/design.md                   the architecture/how
+    tasks/<taskId>.json              one file per task
     activity/<ts>-<id>.json          one file per activity event
-    notes/<file/path>/<ts>-<id>.json one file per file-provenance note (anchored to a commit)
+    notes/<file/path>/<ts>-<id>.json one file per file note, anchored to a commit
 ```
 
-One file per record is the load-bearing design choice: two teammates writing at "the same time" never touch the same file, so git can never produce a merge conflict from normal use. The one real race — two people claiming the *same* task at once — is caught explicitly: `claim_task` re-checks after a rejected push and reports a real conflict instead of silently overwriting.
+One file per record is the important decision here. Two people writing "at the same time" never touch the same file, so git can't produce a merge conflict from ordinary use. The one real race condition — two people claiming the same task at once — is handled explicitly: `claim_task` re-checks after a rejected push and tells you the truth instead of quietly overwriting the other person's claim.
 
-## MCP tools
+## The tools
 
-| Tool | Purpose |
+| Tool | What it does |
 |---|---|
-| `get_handoff_brief` | **The one to call when picking up someone else's work.** Deterministically bundles requirements + design + active tasks + recent structured completions + anchor-verified file history. Optionally filter by `scope`. |
-| `get_context` | Lighter-weight: just tasks + recent activity |
-| `get_plan` | Read `requirements.md` + `design.md` |
-| `update_plan` | Replace the full content of one plan doc |
-| `declare_task` | Propose scope/interface/assumptions. Returns `conflicts` (other declared tasks touching the same scope) AND `recentActivityNearby` (real git commits touching this scope in the last 10 min from anyone else, declared or not). Leaves the task **unclaimed**. |
-| `claim_task` | Claim an unclaimed (or your own) task. Also returns `recentActivityNearby` as a non-blocking heads-up. |
-| `update_task_status` | Move a task along (`todo`/`claimed`/`in_progress`/`abandoned`/`done`); on `done`, attach a **structured** `completion` — not a free-text summary. Returns `uncommittedFileWarnings` if any claimed `filesChanged` path isn't actually committed/pushed yet. On `abandoned`, attach `abandonReason` — makes a mid-task pivot visible and the task reclaimable, instead of silently sitting at "in_progress" forever. |
-| `log_activity` | "I'm doing X right now." Use `kind: "pivoted"` when changing approach mid-task without abandoning it outright. |
-| `record_file_note` | Attach a rationale note to a file you finished touching, anchored to the current commit |
-| `get_file_history` | Read a file's provenance trail, each note tagged `verified`/`changed`/`gone` against its anchor |
-| `check_file_before_edit` | Fast single-file freshness check — call right before editing a file that's part of a shared interface, especially in a long session. Backs the Claude Code `PreToolUse` gate. |
-| `get_task_history` | Every status transition a task went through, who made each change, when — `.hub/tasks/<id>.json` is overwritten in place per change, so this sequence isn't otherwise visible even though git already stores it. |
+| `get_handoff_brief` | Call this when you're picking up someone else's work. Bundles the plan, open tasks, recent completions, and file history in one shot. Can filter by `scope`. |
+| `get_context` | The lightweight version — just tasks and recent activity. |
+| `get_plan` / `update_plan` | Read or replace `requirements.md` / `design.md`. |
+| `declare_task` | Propose a task with a scope. Comes back with any declared tasks that overlap, plus real git commits touching the same files in the last 10 minutes from anyone else. Leaves the task unclaimed on purpose — call `claim_task` if you're the one building it. |
+| `claim_task` | Claim an unclaimed task, or your own. |
+| `update_task_status` | Move a task forward. Marking it `done` needs a structured completion, not a one-liner. Marking it `abandoned` needs a reason — that way a half-finished task doesn't just look stuck forever, and it becomes claimable again. |
+| `log_activity` | "Here's what I'm doing right now." Use `kind: "pivoted"` if you're changing approach mid-task without abandoning it. |
+| `record_file_note` | Leave a note on a file you just finished touching. |
+| `get_file_history` | Read a file's notes, each one tagged with whether it's still trustworthy. |
+| `check_file_before_edit` | A fast check on one file before you touch it — cheaper than the full handoff brief, useful in a long session where your original context might be stale. This is what backs the Claude Code enforcement gate. |
+| `get_task_history` | The full status history of a task. `.hub/tasks/<id>.json` gets overwritten in place on every change, so without this the todo → claimed → done sequence isn't visible even though git already has it. |
 
-No `join_workspace`/auth tool — every tool takes an optional `memberName`, defaulting to `git config user.name`.
+No login, no auth tool. Every tool takes an optional `memberName`, and if you don't pass one it just uses `git config user.name`.
 
-## Harness support
+## Where it actually works today
 
-All hooks are pure Node (`.mjs`) — no bash/Git-Bash/WSL dependency, since Node is already a hard requirement of teamhub-mcp itself. This was a real fix, not a preference: on Windows, npm installs `hub-server` as a `.cmd` wrapper, which Node's `child_process` cannot execute without a shell — `hooks/lib/run-hub-server.mjs` handles this safely (shell only on Windows, with real argument escaping, not naive string concatenation).
+Hooks are plain Node scripts (`.mjs`), not bash — Node's already a hard requirement, so this avoids needing Git Bash or WSL on Windows. This wasn't just a style choice: npm installs `hub-server` as a `.cmd` file on Windows, which Node can't run directly without a shell, and getting that right (safely, without the argument-injection issues that come with shelling out carelessly) took some real work.
 
-| Harness | Context injection | Enforcement (deny an edit until checked in) |
-|---|---|---|
-| Claude Code | `SessionStart` hook — **verified working**: confirmed live that hook output actually reaches the model's context, not just that the hook process runs | `PreToolUse` hook — **verified working end-to-end** via a real `claude -p` run: a raw Edit was denied, the model correctly called `get_handoff_brief` to clear the gate, then the edit succeeded. Known limits: a blocked model can route around via Bash instead of Edit, and hooks cannot see/gate MCP tool calls directly — the gate works by having the MCP server leave a marker file the hook checks. Doesn't yet force *recording* completion afterward, only checking in *before* editing. |
-| Antigravity | `pre_turn` hook — presumed working (same injection pattern as Claude Code), not independently verified against a live install | **Not implemented.** Antigravity's docs mention a `HookResult(allow=...)` field but don't confirm it can deny a tool call, and this couldn't be verified without a scriptable way to test Antigravity. An unverified gate that might silently do nothing would be worse than an honest gap. |
-| Cursor | hook — written, **not verified** against a live install | not implemented |
-| OpenCode | `session.created` plugin event — written, **not verified** against a live install | not implemented |
-| Codex CLI | *(no session hook exists upstream)* | not built — needs a shell-wrapper fallback |
+**Claude Code** is the one I've actually verified end to end. The `SessionStart` hook really does get its output into the model's context — I checked by putting a made-up string in the hook and asking a fresh session if it saw anything unusual, and it reported the string back. The `PreToolUse` enforcement gate works too: I ran a real `claude -p` session, watched it get denied on a raw edit, watched it correctly call `get_handoff_brief` to clear the gate, then watched the edit go through. It's not bulletproof — a blocked model can still route around it through Bash instead of Edit, and it can only catch built-in tool calls, not MCP calls directly, so the gate works by having the MCP server itself leave a marker the hook can check. It also only enforces checking in *before* you edit, not recording what you did *afterward* — there's no equally clean hook for that yet.
 
-All hook scripts shell out to `hub-server handoff` and degrade silently if it's not installed or the repo has no `.hub/` yet. The exact hook-registration config syntax for each harness is evolving fast — verify against that harness's current docs before wiring these in.
+**Antigravity** should get context injected the same way, but I haven't been able to verify it live — there's no scriptable CLI on my machine to test it the way I could with Claude Code. The enforcement gate isn't built for it at all: Antigravity's docs mention something that might allow blocking a tool call, but it's not confirmed, and I'd rather leave it out than ship something that looks like it works and quietly doesn't.
 
-## Directory resolution
+**Cursor** and **OpenCode** have hooks written for them but I haven't tested either against a real install. **Codex CLI** has nothing yet — there's no session-start hook to attach to upstream, so it'd need a different approach (wrapping the binary) that isn't built.
 
-Asked once per session and cached in memory for that server process:
+## How it figures out which repo you mean
 
-1. `HUB_REPO_PATH` env override, if set, wins outright.
-2. Otherwise, teamhub-mcp asks the user directly, via MCP **elicitation** — "which GitHub repo are you working on?" — then resolves that URL to a local clone: a matching git remote at the auto-detected candidate directory, a cached mapping from a previous session on this machine (`~/.hub-server/repo-cache.json`), a bounded search of common folders (`~`, `~/Desktop`, `~/Documents`, direct children only), or asking directly where it's cloned as a last resort. This doubles as team identity, and sidesteps a whole class of cwd-detection bugs rather than working around them harness-by-harness.
-3. Falls back to MCP `roots`, then `process.cwd()`, if elicitation isn't answered or supported.
+This is asked once per session and then cached for the rest of that process:
 
-**Verified real, not just documented**: a test client that declares the elicitation capability confirmed the full round-trip — server asks, client answers a URL, server finds the right local clone even launched from a totally unrelated directory. **Also verified, honestly, that Claude Code itself does not currently trigger this** (tested with `claude -p` — no prompt appeared, it fell through to the fallback chain, which worked correctly). Whether interactive Claude Code or Antigravity support elicitation is unverified.
+1. If you set `HUB_REPO_PATH`, that wins, full stop.
+2. Otherwise it asks you directly — "which GitHub repo are you working on?" — through MCP's elicitation feature, and then works out your local clone from the answer: checking if the auto-detected folder's git remote matches, checking a cache of past answers on this machine, doing a quick scan of `~`, `~/Desktop`, and `~/Documents` for a matching clone, or just asking where you put it.
+3. If the client doesn't support elicitation, or you don't answer, it falls back to MCP's `roots` protocol and then plain `process.cwd()`.
 
-**Known limitation**: multiple local clones of the same repo on one machine resolve to whichever is found first, not necessarily the one you meant — fine for the normal one-clone-per-person case, ambiguous otherwise.
+I built a test client that supports elicitation to confirm this actually works, including launching from a totally unrelated folder and having it find the right clone anyway. Claude Code itself doesn't trigger the prompt as of writing — I tested with `claude -p` and no prompt showed up, so it just falls through to the cwd-based fallback, which still works fine. Whether Antigravity supports elicitation, I don't know yet.
 
-The `process.cwd()` fallback exists because harnesses that launch a *globally* registered MCP server (observed with Antigravity) spawn it from their own install directory, not the open workspace — a real, widely-hit ecosystem bug (see open issues on `google-antigravity/antigravity-cli` and `anthropics/claude-code`), not something specific to this tool.
+One thing to be aware of: if you've got more than one local clone of the same repo, it'll pick whichever one it finds first, which might not be the one you meant. Normal one-clone-per-person setups are unaffected.
 
-## Why structured completion + anchors, not just "more context"
+The reason there's a fallback chain at all is that some harnesses — Antigravity is the one I ran into — launch a globally registered MCP server from their own install folder instead of your actual project. That's a known issue on their end (there are open GitHub issues about it), not something specific to this tool.
 
-The naive fix for "teammate B's agent doesn't know what A did" is dumping more text at it — a bigger summary, more files. That doesn't actually solve the problem, for two reasons specific to this use case:
+## Why structured data instead of just more context
 
-1. **Different models interpret the same prose differently.** Claude, Gemini, and GPT reading the same free-text rationale can draw different conclusions about what mattered and what to do next. Structured fields — fixed shape, varying only in content — measurably reduce this variance.
-2. **A stale summary is worse than no summary**, because it's silently wrong instead of obviously absent. Anchoring every file note to the commit it was true as of, and re-checking that anchor on every read, tells a reader explicitly when something's changed since.
+The obvious fix for "my teammate's agent doesn't know what happened" is to hand it more text — a longer summary, more files. That doesn't really solve it, for two reasons:
 
-`get_handoff_brief` exists so this doesn't depend on any individual agent choosing to gather all of this — it's assembled the same way every time, and auto-injected via hooks, so a human never has to say "pull this, then analyze it, then build X."
+Different models read the same prose differently. Claude, Gemini, and GPT can draw genuinely different conclusions from the same free-text explanation. A fixed set of fields doesn't have that problem — the shape stays the same no matter which model wrote it or which one is reading it.
 
-## Why no live agent-to-agent messaging
+And a summary that's gone stale is worse than no summary, because it looks trustworthy while being wrong. Pinning every note to the commit it was written against, and checking that on every read, means you're told explicitly when something's moved on instead of quietly building on outdated information.
 
-This was seriously considered and deliberately rejected, not just skipped. A directly relevant study measuring this exact tradeoff found that added messaging channels *increase* overhead for sequential-pipeline coordination (one agent finishes, another continues later) — teamhub-mcp's exact shape — because the files already carry the coordination; messaging only helps distributed, simultaneously-active work. Every no-hosted-service live option investigated (file-watcher auto-push, GitHub API polling, an optional relay) either violates the "no server to run" principle or was already tried and abandoned by comparable tools for good reasons (auto-push floods a shared branch with broken intermediate states). See `git log` / project history for the full research trail.
+## Why there's no live messaging between agents
 
-## Known limitations (read this before depending on it)
+I looked into this seriously before deciding against it. There's a study measuring exactly this tradeoff that found adding messaging channels *increases* overhead for sequential handoffs like this one — one person finishes, another continues later — because the files already carry the coordination; messaging mainly helps when work is genuinely simultaneous. Every option I found for doing this without standing up a hosted service either broke the "no server to run" idea or had already been tried and dropped by similar tools for good reasons (auto-committing on every file save floods a shared branch with half-finished code, for instance).
 
-- Conflict detection on `declare_task` is exact string overlap on declared `scope` — cheap and effective for "same file/module/route," won't catch two people building the same thing under different names.
-- Frequent small `hub:` commits are a known rough edge; batching/squashing is a candidate future improvement if it proves noisy in practice.
-- No remote configured (solo/demo repo)? Everything still works — sync becomes a no-op and state stays local.
-- Cursor and OpenCode hooks are written but unverified against live installs. Antigravity's enforcement gate doesn't exist yet.
-- Solo-maintained, chasing several fast-moving platforms' hook/MCP APIs at once — expect breakage as those APIs evolve.
+## Things that aren't done yet, or don't work perfectly
 
-## Roadmap
+- Conflict detection on `declare_task` is a plain string match on scope — good for "same file," won't catch two people building the same feature under different names.
+- Small `hub:` commits pile up fast. Might batch these later if it turns out to bother people in practice.
+- If there's no git remote (a solo project, or just testing), everything still works — it just skips the sync step.
+- Cursor and OpenCode hooks exist but haven't been tested against real installs. Antigravity doesn't have an enforcement gate yet.
+- I'm maintaining this alone, and it depends on hook/MCP APIs from several companies that are all still changing quickly. Expect some breakage as those move.
 
-- Codex CLI support via a binary/shell-wrapper fallback (no native session hook exists upstream).
-- An `AGENTS.md` auto-sync fallback for harnesses without dynamic hooks at all.
-- A minimal local web dashboard over the same data `dashboard --json` already exposes.
-- Turn `declared_interface`/`assumptions` overlap from a warning into an actual block-and-negotiate step.
-- Extend the `PreToolUse` gate pattern to Cursor once verified live.
-- Role-based task visibility, surfacing tasks/provenance on GitHub PRs, multi-repo workspaces.
+## What's next
+
+- Support for Codex CLI, probably via wrapping the binary since there's no hook to attach to.
+- A fallback that keeps `AGENTS.md` in sync for harnesses without real hooks at all.
+- A small local web dashboard on top of the same data `dashboard --json` already returns.
+- Turning the scope-overlap warning into an actual block, with a way to negotiate instead of just flagging it.
+- The `PreToolUse` gate for Cursor, once I can confirm it actually works there.
+- Role-based visibility, surfacing tasks on GitHub PRs, multi-repo setups.
 
 ## Contributing
 
-Issues and PRs welcome — especially reports of what actually happens when you wire this into a harness not yet verified above (Cursor, OpenCode, Antigravity's gate). Real test results, even negative ones, are the most useful contribution right now.
+Issues and PRs are welcome, especially reports of what happens when you try this on a harness I haven't verified yet (Cursor, OpenCode, Antigravity's gate). Right now, an honest "I tried it and here's what broke" is more useful than a feature request.
 
 ## License
 
