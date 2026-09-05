@@ -1,0 +1,358 @@
+import { customAlphabet } from "nanoid";
+import {
+  findRepoRoot,
+  getMemberName,
+  commitAndPush,
+  syncBeforeRead,
+  currentCommit,
+  checkAnchor,
+  checkFileCommitStatus,
+  recentCommitters,
+  fileVersionHistory,
+} from "../git/repo.js";
+import { relativeToRepo } from "../store/paths.js";
+import { ACTIVE_STATUSES, getTask, listTasks, overlappingScope, taskFilePath, writeTask } from "../store/tasks.js";
+import { listActivity, writeActivity } from "../store/activity.js";
+import { listFileNotes, writeFileNote } from "../store/notes.js";
+import { readPlanDoc, writePlanDoc, planFilePath, type PlanDoc } from "../store/plan.js";
+import type {
+  ActivityEvent,
+  AnchorStatus,
+  Context,
+  Decision,
+  FileChange,
+  FileNote,
+  HandoffBrief,
+  Task,
+  TaskCompletion,
+  TaskStatus,
+} from "../types.js";
+
+const nanoid = customAlphabet("0123456789abcdefghijklmnopqrstuvwxyz", 10);
+
+export class HubConflict extends Error {}
+
+function now(): number {
+  return Date.now();
+}
+
+function repoRoot(cwd: string): string {
+  return findRepoRoot(cwd);
+}
+
+function actor(root: string, memberName?: string): string {
+  return memberName?.trim() || getMemberName(root);
+}
+
+export function getContext(cwd: string): Context & { syncMessage?: string } {
+  const root = repoRoot(cwd);
+  const sync = syncBeforeRead(root);
+  return {
+    tasks: listTasks(root),
+    recentActivity: listActivity(root),
+    syncMessage: sync.message,
+  };
+}
+
+export function declareTask(
+  cwd: string,
+  input: { memberName?: string; title: string; scope: string[]; declaredInterface?: string; assumptions?: string }
+): { task: Task; conflicts: Task[]; recentActivityNearby: { author: string; when: string; subject: string }[]; syncMessage?: string } {
+  const root = repoRoot(cwd);
+  const sync = syncBeforeRead(root);
+  // Declaring is proposing, not claiming - `member` only appears in the
+  // commit message. Leave owner null so this task is pickup-able by anyone
+  // (including the declarer, via a follow-up claim_task call) - this is what
+  // makes "one person scaffolds a plan of unclaimed tasks" actually work.
+  const member = actor(root, input.memberName);
+
+  const active = listTasks(root).filter((t) => ACTIVE_STATUSES.includes(t.status));
+  const conflicts = active.filter((t) => overlappingScope(t.scope, input.scope).length > 0);
+
+  // Pure git, no live channel: has anyone else committed against this scope
+  // VERY recently? Catches a teammate mid-edit right now even if they never
+  // declared a task for it - this is the answer to "shouldn't the other
+  // agent know someone's doing something" that doesn't need new infra.
+  const recentActivityNearby = recentCommitters(root, { paths: input.scope, windowSeconds: 600, excludeAuthor: member });
+
+  const task: Task = {
+    id: nanoid(),
+    title: input.title,
+    scope: input.scope,
+    status: "todo",
+    owner: null,
+    declaredInterface: input.declaredInterface ?? null,
+    assumptions: input.assumptions ?? null,
+    completion: null,
+    abandonReason: null,
+    createdAt: now(),
+    updatedAt: now(),
+  };
+  const path = writeTask(root, task);
+  commitAndPush(root, [relativeToRepo(root, path)], `hub: declare task "${task.title}" (${member})`);
+
+  return { task, conflicts, recentActivityNearby, syncMessage: sync.message };
+}
+
+export function claimTask(
+  cwd: string,
+  input: { memberName?: string; taskId: string }
+): Task & { recentActivityNearby: { author: string; when: string; subject: string }[] } {
+  const root = repoRoot(cwd);
+  syncBeforeRead(root);
+  const member = actor(root, input.memberName);
+
+  const existing = getTask(root, input.taskId);
+  if (!existing) throw new HubConflict(`No task ${input.taskId} in .hub/tasks/.`);
+  if (existing.owner && existing.owner !== member && ACTIVE_STATUSES.includes(existing.status)) {
+    throw new HubConflict(`Task "${existing.title}" is already claimed by ${existing.owner}.`);
+  }
+
+  // Ownership check passed, but has someone touched this scope in the last
+  // few minutes anyway (editing directly, without declaring a task)? Surface
+  // it as a warning rather than blocking - it might be stale activity, but
+  // worth a second look before diving in.
+  const recentActivityNearby = recentCommitters(root, { paths: existing.scope, windowSeconds: 600, excludeAuthor: member });
+
+  const updated: Task = { ...existing, owner: member, status: "claimed", updatedAt: now() };
+  const path = writeTask(root, updated);
+
+  commitAndPush(root, [relativeToRepo(root, path)], `hub: ${member} claims "${updated.title}"`, () => {
+    // Push was rejected - a teammate pushed first. Re-check before retrying:
+    // if THEY claimed this exact task in the meantime, surface a real
+    // conflict instead of silently overwriting their claim.
+    const latest = getTask(root, input.taskId);
+    if (latest && latest.owner && latest.owner !== member && ACTIVE_STATUSES.includes(latest.status)) {
+      throw new HubConflict(`Lost the race - "${latest.title}" was just claimed by ${latest.owner}.`);
+    }
+  });
+
+  return { ...updated, recentActivityNearby };
+}
+
+export function updateTaskStatus(
+  cwd: string,
+  input: {
+    memberName?: string;
+    taskId: string;
+    status: TaskStatus;
+    completion?: { whatWasBuilt: string; decisions?: Decision[]; filesChanged?: FileChange[]; knownLimitations?: string; nextSteps?: string };
+    abandonReason?: string;
+  }
+): Task & { uncommittedFileWarnings?: string[] } {
+  const root = repoRoot(cwd);
+  syncBeforeRead(root);
+  const member = actor(root, input.memberName);
+
+  const existing = getTask(root, input.taskId);
+  if (!existing) throw new HubConflict(`No task ${input.taskId} in .hub/tasks/.`);
+
+  const completion: TaskCompletion | null = input.completion
+    ? {
+        whatWasBuilt: input.completion.whatWasBuilt,
+        decisions: input.completion.decisions ?? [],
+        filesChanged: input.completion.filesChanged ?? [],
+        knownLimitations: input.completion.knownLimitations,
+        nextSteps: input.completion.nextSteps,
+      }
+    : existing.completion;
+
+  const updated: Task = {
+    ...existing,
+    status: input.status,
+    completion,
+    abandonReason: input.abandonReason ?? existing.abandonReason,
+    updatedAt: now(),
+  };
+  const path = writeTask(root, updated);
+  commitAndPush(root, [relativeToRepo(root, path)], `hub: ${member} sets "${updated.title}" -> ${input.status}`);
+
+  // Catches the "marked done, but the real code never left this laptop"
+  // pattern (observed twice) at the moment it happens, not weeks later when
+  // a teammate discovers their handoff brief was lying to them.
+  let uncommittedFileWarnings: string[] | undefined;
+  if (input.status === "done" && completion?.filesChanged?.length) {
+    const problems = completion.filesChanged
+      .map((fc) => ({ path: fc.path, status: checkFileCommitStatus(root, fc.path) }))
+      .filter((r) => r.status !== "committed_and_pushed");
+    if (problems.length > 0) {
+      uncommittedFileWarnings = problems.map(
+        (p) => `${p.path}: ${p.status} - teammates will NOT see this file's content until you commit and push it.`
+      );
+    }
+  }
+
+  return uncommittedFileWarnings ? { ...updated, uncommittedFileWarnings } : updated;
+}
+
+export function logActivity(
+  cwd: string,
+  input: { memberName?: string; kind: string; detail: string; files?: string[] }
+): ActivityEvent {
+  const root = repoRoot(cwd);
+  const member = actor(root, input.memberName);
+
+  const event: ActivityEvent = {
+    id: nanoid(),
+    member,
+    kind: input.kind,
+    detail: input.detail,
+    files: input.files ?? [],
+    createdAt: now(),
+  };
+  const path = writeActivity(root, event);
+  commitAndPush(root, [relativeToRepo(root, path)], `hub: ${member} activity - ${input.kind}`);
+  return event;
+}
+
+export function recordFileNote(
+  cwd: string,
+  input: { memberName?: string; filePath: string; summary: string; reasoning?: string }
+): FileNote {
+  const root = repoRoot(cwd);
+  const member = actor(root, input.memberName);
+
+  const note: FileNote = {
+    id: nanoid(),
+    member,
+    filePath: input.filePath,
+    summary: input.summary,
+    reasoning: input.reasoning ?? null,
+    // Pinned to the commit this was true as of - re-verified on every read
+    // (checkAnchor) so a reader knows if the file has moved on since.
+    anchor: { path: input.filePath, commitHash: currentCommit(root) },
+    createdAt: now(),
+  };
+  const path = writeFileNote(root, note);
+  commitAndPush(root, [relativeToRepo(root, path)], `hub: ${member} note on ${input.filePath}`);
+  return note;
+}
+
+function withAnchorStatus(root: string, notes: FileNote[]): (FileNote & { anchorStatus: AnchorStatus })[] {
+  return notes.map((n) => ({ ...n, anchorStatus: checkAnchor(root, n.anchor.path, n.anchor.commitHash) }));
+}
+
+export function getFileHistory(
+  cwd: string,
+  filePath: string
+): { notes: (FileNote & { anchorStatus: AnchorStatus })[]; syncMessage?: string } {
+  const root = repoRoot(cwd);
+  const sync = syncBeforeRead(root);
+  return { notes: withAnchorStatus(root, listFileNotes(root, filePath)), syncMessage: sync.message };
+}
+
+/**
+ * The full status-transition history of a task (todo -> claimed ->
+ * in_progress -> done/abandoned), oldest first. `.hub/tasks/<id>.json` is
+ * overwritten in place on each change (unlike activity/notes), so this
+ * sequence isn't otherwise visible even though git already has every
+ * version - this just exposes what's already there.
+ */
+export function getTaskHistory(cwd: string, taskId: string): { history: { commitHash: string; author: string; when: string; subject: string; task: Task | null }[]; syncMessage?: string } {
+  const root = repoRoot(cwd);
+  const sync = syncBeforeRead(root);
+  const relPath = relativeToRepo(root, taskFilePath(root, taskId));
+  const versions = fileVersionHistory(root, relPath);
+  return {
+    history: versions.map((v) => {
+      let task: Task | null = null;
+      try {
+        task = JSON.parse(v.content);
+      } catch {
+        task = null;
+      }
+      return { commitHash: v.commitHash, author: v.author, when: v.when, subject: v.subject, task };
+    }),
+    syncMessage: sync.message,
+  };
+}
+
+/**
+ * Fast, single-file check meant to run right before an edit (PreToolUse
+ * hook), not a full get_handoff_brief re-fetch. Answers exactly the
+ * staleness question that caused the balances.settlements regression: has
+ * ANYONE touched this file since I last looked, and does its note history
+ * say something I should know before changing it?
+ */
+export function checkFileBeforeEdit(
+  cwd: string,
+  filePath: string
+): {
+  notes: (FileNote & { anchorStatus: AnchorStatus })[];
+  recentCommitters: { author: string; when: string; subject: string }[];
+  syncMessage?: string;
+} {
+  const root = repoRoot(cwd);
+  const sync = syncBeforeRead(root);
+  return {
+    notes: withAnchorStatus(root, listFileNotes(root, filePath)),
+    recentCommitters: recentCommitters(root, { paths: [filePath], windowSeconds: 900 }),
+    syncMessage: sync.message,
+  };
+}
+
+export function getPlan(cwd: string): { requirements: string; design: string; syncMessage?: string } {
+  const root = repoRoot(cwd);
+  const sync = syncBeforeRead(root);
+  return { requirements: readPlanDoc(root, "requirements"), design: readPlanDoc(root, "design"), syncMessage: sync.message };
+}
+
+export function updatePlan(cwd: string, input: { memberName?: string; doc: PlanDoc; content: string }): { path: string } {
+  const root = repoRoot(cwd);
+  syncBeforeRead(root);
+  const member = actor(root, input.memberName);
+  const path = writePlanDoc(root, input.doc, input.content);
+  commitAndPush(root, [relativeToRepo(root, path)], `hub: ${member} updates ${input.doc}.md`);
+  return { path: planFilePath(root, input.doc) };
+}
+
+/**
+ * One deterministic call assembling everything a joining agent needs:
+ * requirements + design (the why/how), active tasks (what's left), recently
+ * completed tasks with their structured completion reports (what was just
+ * built and why), recent activity, and anchor-verified file history for
+ * every file those completions touched. This is what hooks auto-inject -
+ * the point is that every agent gets the SAME assembled payload regardless
+ * of which harness/model it is or which tools it would have thought to call
+ * on its own.
+ */
+export function getHandoffBrief(cwd: string, opts: { scope?: string[]; doneLimit?: number } = {}): HandoffBrief & { syncMessage?: string } {
+  const root = repoRoot(cwd);
+  const sync = syncBeforeRead(root);
+
+  const allTasks = listTasks(root);
+  const inScope = (t: Task) => !opts.scope || opts.scope.length === 0 || overlappingScope(t.scope, opts.scope).length > 0;
+
+  const activeTasks = allTasks.filter((t) => ACTIVE_STATUSES.includes(t.status) && inScope(t));
+  const recentlyDone = allTasks
+    .filter((t) => t.status === "done" && inScope(t))
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, opts.doneLimit ?? 10);
+  const recentlyAbandoned = allTasks
+    .filter((t) => t.status === "abandoned" && inScope(t))
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, opts.doneLimit ?? 10);
+
+  const touchedFiles = new Set<string>();
+  for (const t of recentlyDone) {
+    for (const fc of t.completion?.filesChanged ?? []) touchedFiles.add(fc.path);
+  }
+
+  const fileHistory: HandoffBrief["fileHistory"] = {};
+  for (const path of touchedFiles) {
+    fileHistory[path] = withAnchorStatus(root, listFileNotes(root, path));
+  }
+
+  return {
+    requirements: readPlanDoc(root, "requirements"),
+    design: readPlanDoc(root, "design"),
+    activeTasks,
+    recentlyDone,
+    recentlyAbandoned,
+    recentActivity: listActivity(root),
+    fileHistory,
+    syncMessage: sync.message,
+  };
+}
+
+export { taskFilePath };
