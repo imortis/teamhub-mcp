@@ -17,6 +17,8 @@ function normalize(raw: any): Task {
     raw.completion = { whatWasBuilt: raw.rationale, decisions: [], filesChanged: [] };
   }
   if (raw.abandonReason === undefined) raw.abandonReason = null;
+  if (!Array.isArray(raw.dependsOn)) raw.dependsOn = [];
+  if (raw.baseCommit === undefined) raw.baseCommit = null;
   return raw as Task;
 }
 

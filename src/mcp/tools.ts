@@ -9,6 +9,8 @@ import {
   checkFileCommitStatus,
   recentCommitters,
   fileVersionHistory,
+  diffSince,
+  type DiffSince,
 } from "../git/repo.js";
 import { relativeToRepo } from "../store/paths.js";
 import { ACTIVE_STATUSES, getTask, listTasks, overlappingScope, taskFilePath, writeTask } from "../store/tasks.js";
@@ -18,6 +20,7 @@ import { readPlanDoc, writePlanDoc, planFilePath, type PlanDoc } from "../store/
 import type {
   ActivityEvent,
   AnchorStatus,
+  BlockedBy,
   Context,
   Decision,
   FileChange,
@@ -56,8 +59,14 @@ export function getContext(cwd: string): Context & { syncMessage?: string } {
 
 export function declareTask(
   cwd: string,
-  input: { memberName?: string; title: string; scope: string[]; declaredInterface?: string; assumptions?: string }
-): { task: Task; conflicts: Task[]; recentActivityNearby: { author: string; when: string; subject: string }[]; syncMessage?: string } {
+  input: { memberName?: string; title: string; scope: string[]; declaredInterface?: string; assumptions?: string; dependsOn?: string[] }
+): {
+  task: Task;
+  conflicts: Task[];
+  recentActivityNearby: { author: string; when: string; subject: string }[];
+  unknownDependencies?: string[];
+  syncMessage?: string;
+} {
   const root = repoRoot(cwd);
   const sync = syncBeforeRead(root);
   // Declaring is proposing, not claiming - `member` only appears in the
@@ -75,6 +84,11 @@ export function declareTask(
   // agent know someone's doing something" that doesn't need new infra.
   const recentActivityNearby = recentCommitters(root, { paths: input.scope, windowSeconds: 600, excludeAuthor: member });
 
+  // Flag dependency IDs that don't resolve to a real task, rather than
+  // silently storing a dangling reference nobody notices until claim time.
+  const dependsOn = input.dependsOn ?? [];
+  const unknownDependencies = dependsOn.filter((id) => !getTask(root, id));
+
   const task: Task = {
     id: nanoid(),
     title: input.title,
@@ -85,19 +99,45 @@ export function declareTask(
     assumptions: input.assumptions ?? null,
     completion: null,
     abandonReason: null,
+    dependsOn,
+    baseCommit: null,
     createdAt: now(),
     updatedAt: now(),
   };
   const path = writeTask(root, task);
   commitAndPush(root, [relativeToRepo(root, path)], `hub: declare task "${task.title}" (${member})`);
 
-  return { task, conflicts, recentActivityNearby, syncMessage: sync.message };
+  return {
+    task,
+    conflicts,
+    recentActivityNearby,
+    ...(unknownDependencies.length > 0 ? { unknownDependencies } : {}),
+    syncMessage: sync.message,
+  };
+}
+
+/**
+ * Which of a task's dependencies aren't finished yet, resolved fresh at
+ * read time (a dependency can be completed after this task was declared).
+ */
+function resolveBlockedBy(root: string, task: Task): BlockedBy[] {
+  return (task.dependsOn ?? [])
+    .map((id): BlockedBy | null => {
+      const dep = getTask(root, id);
+      if (!dep) return { taskId: id, title: "(task not found)", status: "missing" };
+      if (dep.status === "done") return null;
+      return { taskId: id, title: dep.title, status: dep.status };
+    })
+    .filter((x): x is BlockedBy => x !== null);
 }
 
 export function claimTask(
   cwd: string,
   input: { memberName?: string; taskId: string }
-): Task & { recentActivityNearby: { author: string; when: string; subject: string }[] } {
+): Task & {
+  recentActivityNearby: { author: string; when: string; subject: string }[];
+  blockedBy?: BlockedBy[];
+} {
   const root = repoRoot(cwd);
   syncBeforeRead(root);
   const member = actor(root, input.memberName);
@@ -114,7 +154,21 @@ export function claimTask(
   // worth a second look before diving in.
   const recentActivityNearby = recentCommitters(root, { paths: existing.scope, windowSeconds: 600, excludeAuthor: member });
 
-  const updated: Task = { ...existing, owner: member, status: "claimed", updatedAt: now() };
+  // Unfinished dependencies - a warning, not a block. Scope-overlap
+  // detection can't see these (dependent tasks usually touch different
+  // files entirely), so without this you'd start building against
+  // something that doesn't exist yet and get no signal at all.
+  const blockedBy = resolveBlockedBy(root, existing);
+
+  const updated: Task = {
+    ...existing,
+    owner: member,
+    status: "claimed",
+    // Mark where work starts, so get_diff_for_task has something to diff
+    // against later. Don't overwrite it if this task was claimed before.
+    baseCommit: existing.baseCommit ?? currentCommit(root),
+    updatedAt: now(),
+  };
   const path = writeTask(root, updated);
 
   commitAndPush(root, [relativeToRepo(root, path)], `hub: ${member} claims "${updated.title}"`, () => {
@@ -127,7 +181,11 @@ export function claimTask(
     }
   });
 
-  return { ...updated, recentActivityNearby };
+  return {
+    ...updated,
+    recentActivityNearby,
+    ...(blockedBy.length > 0 ? { blockedBy } : {}),
+  };
 }
 
 export function updateTaskStatus(
@@ -260,6 +318,37 @@ export function getFileHistory(
  * sequence isn't otherwise visible even though git already has every
  * version - this just exposes what's already there.
  */
+/**
+ * What actually changed since this task was claimed - committed and
+ * uncommitted. Meant to be called right before writing a completion
+ * report, so `filesChanged` comes from the real diff instead of the
+ * agent's recollection of a long session. That matters beyond tidiness:
+ * `uncommittedFileWarnings` only checks the paths a completion lists, so
+ * an under-reported file list quietly defeats that check too.
+ */
+export function getDiffForTask(cwd: string, taskId: string): DiffSince & { taskId: string; baseCommit: string | null; syncMessage?: string } {
+  const root = repoRoot(cwd);
+  const sync = syncBeforeRead(root);
+
+  const task = getTask(root, taskId);
+  if (!task) throw new HubConflict(`No task ${taskId} in .hub/tasks/.`);
+
+  if (!task.baseCommit) {
+    return {
+      taskId,
+      baseCommit: null,
+      files: [],
+      stat: "",
+      patch: null,
+      truncated: false,
+      note: "No base commit recorded for this task - it was declared before base commits were tracked, or was never claimed. Claim a task first so there's a 'work starts here' mark to diff against.",
+      syncMessage: sync.message,
+    };
+  }
+
+  return { taskId, baseCommit: task.baseCommit, ...diffSince(root, task.baseCommit), syncMessage: sync.message };
+}
+
 export function getTaskHistory(cwd: string, taskId: string): { history: { commitHash: string; author: string; when: string; subject: string; task: Task | null }[]; syncMessage?: string } {
   const root = repoRoot(cwd);
   const sync = syncBeforeRead(root);
@@ -335,7 +424,9 @@ export function getHandoffBrief(cwd: string, opts: { scope?: string[]; doneLimit
   const allTasks = listTasks(root);
   const inScope = (t: Task) => !opts.scope || opts.scope.length === 0 || overlappingScope(t.scope, opts.scope).length > 0;
 
-  const activeTasks = allTasks.filter((t) => ACTIVE_STATUSES.includes(t.status) && inScope(t));
+  const activeTasks = allTasks
+    .filter((t) => ACTIVE_STATUSES.includes(t.status) && inScope(t))
+    .map((t) => ({ ...t, blockedBy: resolveBlockedBy(root, t) }));
   const recentlyDone = allTasks
     .filter((t) => t.status === "done" && inScope(t))
     .sort((a, b) => b.updatedAt - a.updatedAt)

@@ -40,6 +40,8 @@ cd your-repo && hub-server init
 - **File notes that check their own freshness.** Every note about a file is pinned to the commit it was written against. Read it later and it'll tell you `verified` (nothing's changed), `changed` (go re-read the file, don't trust this blindly), or `gone`. A note that's quietly out of date is worse than no note at all.
 - **One call that gets you everything.** `get_handoff_brief` bundles the plan, open tasks, recent completions, and file history into a single response, and it's what gets auto-injected at session start. The point is that it's the same for everyone — nobody's agent has to decide on the fly how much digging is "enough."
 - **Conflict detection that looks at real git history, not just declared tasks.** `declare_task` checks other declared tasks *and* actual recent commits touching the same files, so it catches a teammate who's mid-edit even if they never bothered to declare anything.
+- **Dependencies, for the case file-overlap can't catch.** "Build `POST /api/auth`" and "wire the login form to it" touch completely different files, so nothing about overlapping scopes will ever flag that the second can't start until the first exists. Mark it with `dependsOn` and you get told at claim time — and the handoff brief shows which tasks are actually startable versus waiting on something.
+- **Completions written from the real diff, not memory.** `get_diff_for_task` shows everything that changed since you claimed it, committed and uncommitted, so the completion report lists what you actually touched. In a long session it's easy to forget files you edited early, or to describe an approach you later reverted — and since the uncommitted-file check only inspects the paths you list, an incomplete list quietly defeats that check too.
 - **You just tell it which repo you're working on.** At session start it asks (via MCP's elicitation feature) which GitHub repo you're on, and figures out your local clone from there. Whoever's working on the same repo is on the same team — nothing extra to set up.
 
 Handoffs here are sequential — one person finishes and pushes, the next person pulls and continues — not simultaneous editing, so a plain git-synced log is enough to keep everyone in sync. No CRDTs, no custom merge logic, and (after actually looking into it) no live messaging between agents either — more on that below.
@@ -65,8 +67,9 @@ One file per record is the important decision here. Two people writing "at the s
 | `get_handoff_brief` | Call this when you're picking up someone else's work. Bundles the plan, open tasks, recent completions, and file history in one shot. Can filter by `scope`. |
 | `get_context` | The lightweight version — just tasks and recent activity. |
 | `get_plan` / `update_plan` | Read or replace `requirements.md` / `design.md`. |
-| `declare_task` | Propose a task with a scope. Comes back with any declared tasks that overlap, plus real git commits touching the same files in the last 10 minutes from anyone else. Leaves the task unclaimed on purpose — call `claim_task` if you're the one building it. |
-| `claim_task` | Claim an unclaimed task, or your own. |
+| `declare_task` | Propose a task with a scope. Comes back with any declared tasks that overlap, plus real git commits touching the same files in the last 10 minutes from anyone else. Takes an optional `dependsOn` list of task IDs. Leaves the task unclaimed on purpose — call `claim_task` if you're the one building it. |
+| `claim_task` | Claim an unclaimed task, or your own. Tells you about recent activity on those files and any dependencies that aren't finished yet. |
+| `get_diff_for_task` | What actually changed since you claimed the task, committed and uncommitted. Call this before writing a completion. |
 | `update_task_status` | Move a task forward. Marking it `done` needs a structured completion, not a one-liner. Marking it `abandoned` needs a reason — that way a half-finished task doesn't just look stuck forever, and it becomes claimable again. |
 | `log_activity` | "Here's what I'm doing right now." Use `kind: "pivoted"` if you're changing approach mid-task without abandoning it. |
 | `record_file_note` | Leave a note on a file you just finished touching. |
@@ -114,7 +117,8 @@ I looked into this seriously before deciding against it. There's a study measuri
 
 ## Things that aren't done yet, or don't work perfectly
 
-- Conflict detection on `declare_task` is a plain string match on scope — good for "same file," won't catch two people building the same feature under different names.
+- Conflict detection on `declare_task` is a plain string match on scope — good for "same file," won't catch two people building the same feature under different names. (Dependencies between tasks are handled separately, via `dependsOn`.)
+- Dependencies are a warning at claim time, not a hard block. If you want to start something that isn't ready yet, nothing stops you — you're just told.
 - Small `hub:` commits pile up fast. Might batch these later if it turns out to bother people in practice.
 - If there's no git remote (a solo project, or just testing), everything still works — it just skips the sync step.
 - Cursor and OpenCode hooks exist but haven't been tested against real installs. Antigravity doesn't have an enforcement gate yet.

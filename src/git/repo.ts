@@ -144,6 +144,76 @@ export function fileVersionHistory(
   });
 }
 
+export interface DiffSince {
+  /** Files changed since the base commit, including uncommitted working-tree changes. */
+  files: { path: string; status: string }[];
+  /** `git diff --stat` style summary. */
+  stat: string;
+  /** Full patch text, omitted when it'd be enormous (see `truncated`). */
+  patch: string | null;
+  truncated: boolean;
+  note?: string;
+}
+
+const MAX_PATCH_BYTES = 60_000;
+
+/**
+ * Everything that changed since `baseCommit`, committed or not. Committed
+ * changes come from `baseCommit..HEAD`; uncommitted ones from the working
+ * tree, because an agent typically writes its completion report before it
+ * has committed anything.
+ */
+export function diffSince(repoRoot: string, baseCommit: string): DiffSince {
+  const reachable = git(repoRoot, ["cat-file", "-e", `${baseCommit}^{commit}`]);
+  if (!reachable.ok) {
+    return {
+      files: [],
+      stat: "",
+      patch: null,
+      truncated: false,
+      note: `Base commit ${baseCommit} isn't reachable (history may have been rewritten) - can't diff against it.`,
+    };
+  }
+
+  const committed = git(repoRoot, ["diff", "--name-status", `${baseCommit}..HEAD`]);
+  const uncommitted = git(repoRoot, ["status", "--porcelain"]);
+
+  const files: { path: string; status: string }[] = [];
+  const seen = new Set<string>();
+  for (const line of committed.stdout.split("\n").filter(Boolean)) {
+    const [status, ...rest] = line.split(/\s+/);
+    const path = rest.join(" ");
+    if (path && !seen.has(path)) {
+      seen.add(path);
+      files.push({ path, status: `committed:${status}` });
+    }
+  }
+  for (const line of uncommitted.stdout.split("\n").filter(Boolean)) {
+    const status = line.slice(0, 2).trim();
+    const path = line.slice(3).trim();
+    if (path && !seen.has(path)) {
+      seen.add(path);
+      files.push({ path, status: `uncommitted:${status}` });
+    }
+  }
+
+  const stat = git(repoRoot, ["diff", "--stat", `${baseCommit}..HEAD`]).stdout;
+  const committedPatch = git(repoRoot, ["diff", `${baseCommit}..HEAD`]).stdout;
+  const workingPatch = git(repoRoot, ["diff", "HEAD"]).stdout;
+  const full = [committedPatch, workingPatch].filter(Boolean).join("\n");
+
+  if (full.length > MAX_PATCH_BYTES) {
+    return {
+      files,
+      stat,
+      patch: null,
+      truncated: true,
+      note: `Patch is ${full.length} bytes, too large to inline - use the file list and stat, or read specific files directly.`,
+    };
+  }
+  return { files, stat, patch: full || null, truncated: false };
+}
+
 /** The `origin` remote URL of a repo, or null if there isn't one / it's not a repo. */
 export function getRemoteUrl(repoRoot: string): string | null {
   const res = git(repoRoot, ["remote", "get-url", "origin"]);

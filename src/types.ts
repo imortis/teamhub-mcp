@@ -36,8 +36,29 @@ export interface Task {
   completion: TaskCompletion | null;
   /** Why this was abandoned without finishing - a silent stall looks like "still in progress" to everyone else, this makes a pivot visible instead. */
   abandonReason: string | null;
+  /**
+   * Task IDs this one can't sensibly start before. Scope-overlap conflict
+   * detection is blind to this case: "build POST /api/auth" (scope
+   * api/auth.ts) and "wire login form to it" (scope LoginForm.tsx) share no
+   * files at all, so nothing flags that the second can't start until the
+   * first exists.
+   */
+  dependsOn: string[];
+  /**
+   * HEAD at the moment this task was claimed - the "work starts here" mark
+   * that get_diff_for_task diffs against, so a completion can be written
+   * from the actual diff rather than the agent's memory of a long session.
+   */
+  baseCommit: string | null;
   createdAt: number;
   updatedAt: number;
+}
+
+/** A dependency that isn't finished yet, resolved at read time. */
+export interface BlockedBy {
+  taskId: string;
+  title: string;
+  status: TaskStatus | "missing";
 }
 
 export interface ActivityEvent {
@@ -79,7 +100,8 @@ export interface Context {
 export interface HandoffBrief {
   requirements: string;
   design: string;
-  activeTasks: Task[];
+  /** Each carries `blockedBy` (empty when nothing's in the way), so you can tell what's actually startable before claiming anything. */
+  activeTasks: (Task & { blockedBy: BlockedBy[] })[];
   recentlyDone: Task[];
   recentlyAbandoned: Task[];
   recentActivity: ActivityEvent[];

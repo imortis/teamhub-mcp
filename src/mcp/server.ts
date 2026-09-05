@@ -64,11 +64,17 @@ export function buildMcpServer(): McpServer {
         scope: z.array(z.string()).describe("File paths, module names, or API routes this task will touch."),
         declaredInterface: z.string().optional().describe("e.g. 'POST /reconcile -> {status, exceptions[]}'."),
         assumptions: z.string().optional(),
+        dependsOn: z
+          .array(z.string())
+          .optional()
+          .describe(
+            "Task IDs this one can't sensibly start before - e.g. a 'wire the login form to /api/auth' task depends on the task that builds /api/auth. Worth setting even when the two touch completely different files, because scope-overlap conflict detection can't see that kind of dependency at all."
+          ),
       },
     },
-    async ({ memberName, title, scope, declaredInterface, assumptions }) => {
+    async ({ memberName, title, scope, declaredInterface, assumptions, dependsOn }) => {
       try {
-        return json(hub.declareTask(await cwd(), { memberName, title, scope, declaredInterface, assumptions }));
+        return json(hub.declareTask(await cwd(), { memberName, title, scope, declaredInterface, assumptions, dependsOn }));
       } catch (err) {
         return errorResult(err);
       }
@@ -80,7 +86,7 @@ export function buildMcpServer(): McpServer {
     {
       title: "Claim a task",
       description:
-        "Claim an existing task (e.g. one from get_context) so teammates know you're working on it. Returns `recentActivityNearby` - real commits touching this task's scope in the last 10 minutes from anyone else. A non-empty list doesn't block the claim, but check it before diving in.",
+        "Claim an existing task (e.g. one from get_context) so teammates know you're working on it. Returns `recentActivityNearby` (real commits touching this task's scope in the last 10 minutes from anyone else) and `blockedBy` (dependencies that aren't done yet). Neither blocks the claim, but read both before diving in - `blockedBy` especially, since it means you'd be building against something that doesn't exist yet. Also records the current commit as this task's base, so get_diff_for_task can show exactly what changed once you're finished.",
       inputSchema: { memberName: z.string().optional(), taskId: z.string() },
     },
     async ({ memberName, taskId }) => {
@@ -104,7 +110,7 @@ export function buildMcpServer(): McpServer {
     {
       title: "Update task status",
       description:
-        "Update a task's status. When marking a task 'done', ALWAYS include `completion` with this fixed shape (not a free-text summary) - a structured report is what stays consistent when a different model reads it later, unlike prose that gets reinterpreted differently by every reader: whatWasBuilt (1-3 sentences), decisions (each with decision/why/alternativesConsidered), filesChanged (each with path/purpose), knownLimitations, nextSteps. This becomes the permanent, queryable design record in .hub/tasks/ for teammates, and feeds get_handoff_brief. IMPORTANT: if the response includes `uncommittedFileWarnings`, the files you listed in `filesChanged` are NOT actually committed/pushed yet - commit and push them for real before telling the user this is done, or teammates will never see the code. If you're changing direction WITHOUT finishing (switching approach, or dropping it), set status 'abandoned' with `abandonReason` instead of just going quiet - an abandoned task is reclaimable by teammates and shows up honestly in get_handoff_brief; a task silently left 'in_progress' forever looks like someone's still on it.",
+        "Update a task's status. Before marking one 'done', call get_diff_for_task first and write the completion from the actual diff rather than memory. ALWAYS include `completion` with this fixed shape (not a free-text summary) - a structured report is what stays consistent when a different model reads it later, unlike prose that gets reinterpreted differently by every reader: whatWasBuilt (1-3 sentences), decisions (each with decision/why/alternativesConsidered), filesChanged (each with path/purpose), knownLimitations, nextSteps. This becomes the permanent, queryable design record in .hub/tasks/ for teammates, and feeds get_handoff_brief. IMPORTANT: if the response includes `uncommittedFileWarnings`, the files you listed in `filesChanged` are NOT actually committed/pushed yet - commit and push them for real before telling the user this is done, or teammates will never see the code. If you're changing direction WITHOUT finishing (switching approach, or dropping it), set status 'abandoned' with `abandonReason` instead of just going quiet - an abandoned task is reclaimable by teammates and shows up honestly in get_handoff_brief; a task silently left 'in_progress' forever looks like someone's still on it.",
       inputSchema: {
         memberName: z.string().optional(),
         taskId: z.string(),
@@ -186,6 +192,23 @@ export function buildMcpServer(): McpServer {
     async ({ filePath }) => {
       try {
         return json(hub.getFileHistory(await cwd(), filePath));
+      } catch (err) {
+        return errorResult(err);
+      }
+    }
+  );
+
+  server.registerTool(
+    "get_diff_for_task",
+    {
+      title: "See what actually changed for a task",
+      description:
+        "Call this BEFORE writing a completion report. Returns everything that changed since you claimed the task - committed and uncommitted - as a file list, a diff stat, and (when it's not enormous) the full patch. Write `filesChanged` from this, not from memory: in a long session it's easy to forget files you touched early or to report ones from an approach you later reverted, and since `uncommittedFileWarnings` only checks the paths you list, an incomplete list also quietly defeats that safety check.",
+      inputSchema: { taskId: z.string() },
+    },
+    async ({ taskId }) => {
+      try {
+        return json(hub.getDiffForTask(await cwd(), taskId));
       } catch (err) {
         return errorResult(err);
       }
