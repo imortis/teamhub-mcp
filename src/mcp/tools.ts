@@ -190,6 +190,13 @@ export function logActivity(
   input: { memberName?: string; kind: string; detail: string; files?: string[] }
 ): ActivityEvent {
   const root = repoRoot(cwd);
+  // Sync BEFORE committing, not just on retry-after-rejection: otherwise a
+  // clone that's behind by several commits builds its new commit on a
+  // stale base, and if the retry's ff-only merge then hits real
+  // divergence (not a genuine file conflict - .hub/activity/ files never
+  // collide - just a self-inflicted stale base), it fails permanently
+  // instead of the normal "1 commit behind, trivial fast-forward" case.
+  syncBeforeRead(root);
   const member = actor(root, input.memberName);
 
   const event: ActivityEvent = {
@@ -210,6 +217,11 @@ export function recordFileNote(
   input: { memberName?: string; filePath: string; summary: string; reasoning?: string }
 ): FileNote {
   const root = repoRoot(cwd);
+  // Same reasoning as logActivity: sync before committing, not just on
+  // retry. Also matters here specifically because the anchor pins to
+  // currentCommit(root) right below - syncing first means the anchor
+  // reflects the actual latest HEAD, not a stale one.
+  syncBeforeRead(root);
   const member = actor(root, input.memberName);
 
   const note: FileNote = {
