@@ -37,9 +37,15 @@ function run(command, args, opts) {
 
 export function runHubServer(args, opts = {}) {
   const baseOpts = { encoding: "utf8", timeout: 15000, ...opts };
+  // stdio: pipe on all three streams for the fast-path attempt - on
+  // Windows, execSync/cmd.exe otherwise prints "'hub-server' is not
+  // recognized..." straight to our stderr even though we catch the
+  // exception cleanly, which would look like a real error on every single
+  // hook call for anyone without a persistent install (the fallback below
+  // always succeeds regardless).
   try {
-    return run("hub-server", args, baseOpts);
-  } catch (err) {
+    return run("hub-server", args, { ...baseOpts, stdio: ["ignore", "pipe", "pipe"] });
+  } catch {
     // ENOENT (POSIX) / "not recognized" (Windows via cmd.exe) - not
     // installed globally. Fall back to npx.
     return run("npx", ["-y", "teamhub-mcp", ...args], baseOpts);
