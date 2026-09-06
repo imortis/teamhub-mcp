@@ -42,7 +42,7 @@ cd your-repo && hub-server init
 - **Conflict detection that looks at real git history, not just declared tasks.** `declare_task` checks other declared tasks *and* actual recent commits touching the same files, so it catches a teammate who's mid-edit even if they never bothered to declare anything.
 - **Dependencies, for the case file-overlap can't catch.** "Build `POST /api/auth`" and "wire the login form to it" touch completely different files, so nothing about overlapping scopes will ever flag that the second can't start until the first exists. Mark it with `dependsOn` and you get told at claim time — and the handoff brief shows which tasks are actually startable versus waiting on something.
 - **Completions written from the real diff, not memory.** `get_diff_for_task` shows everything that changed since you claimed it, committed and uncommitted, so the completion report lists what you actually touched. In a long session it's easy to forget files you edited early, or to describe an approach you later reverted — and since the uncommitted-file check only inspects the paths you list, an incomplete list quietly defeats that check too.
-- **You just tell it which repo you're working on.** At session start it asks (via MCP's elicitation feature) which GitHub repo you're on, and figures out your local clone from there. Whoever's working on the same repo is on the same team — nothing extra to set up.
+- **It tells you which repo it's using, and you can change it by just saying so.** Every context response names the active repo, so if it picked the wrong one you'll see it straight away. Tell your agent to switch and it calls `set_repo` — by GitHub URL or folder path. Whoever's working on the same repo is on the same team; there's nothing else to set up, no accounts, no workspace IDs.
 
 Handoffs here are sequential — one person finishes and pushes, the next person pulls and continues — not simultaneous editing, so a plain git-synced log is enough to keep everyone in sync. No CRDTs, no custom merge logic, and (after actually looking into it) no live messaging between agents either — more on that below.
 
@@ -70,6 +70,7 @@ One file per record is the important decision here. Two people writing "at the s
 | `declare_task` | Propose a task with a scope. Comes back with any declared tasks that overlap, plus real git commits touching the same files in the last 10 minutes from anyone else. Takes an optional `dependsOn` list of task IDs. Leaves the task unclaimed on purpose — call `claim_task` if you're the one building it. |
 | `claim_task` | Claim an unclaimed task, or your own. Tells you about recent activity on those files and any dependencies that aren't finished yet. |
 | `get_diff_for_task` | What actually changed since you claimed the task, committed and uncommitted. Call this before writing a completion. |
+| `set_repo` | Point this session at a different repo, by GitHub URL or local path. Use it when you switch projects, or when the repo it picked isn't the one you meant. `reset: true` goes back to automatic detection. |
 | `update_task_status` | Move a task forward. Marking it `done` needs a structured completion, not a one-liner. Marking it `abandoned` needs a reason — that way a half-finished task doesn't just look stuck forever, and it becomes claimable again. |
 | `log_activity` | "Here's what I'm doing right now." Use `kind: "pivoted"` if you're changing approach mid-task without abandoning it. |
 | `record_file_note` | Leave a note on a file you just finished touching. |
@@ -98,6 +99,10 @@ This is asked once per session and then cached for the rest of that process:
 3. If the client doesn't support elicitation, or you don't answer, it falls back to MCP's `roots` protocol and then plain `process.cwd()`.
 
 I built a test client that supports elicitation to confirm this actually works, including launching from a totally unrelated folder and having it find the right clone anyway. Claude Code itself doesn't trigger the prompt as of writing — I tested with `claude -p` and no prompt showed up, so it just falls through to the cwd-based fallback, which still works fine. Whether Antigravity supports elicitation, I don't know yet.
+
+**So in practice you probably won't be asked, and usually won't need to be.** Every context response carries an `activeRepo` field naming the repo in use, so a wrong one shows up immediately instead of being silently wrong. If it isn't what you meant, just tell your agent to switch — it calls `set_repo`, which works on every harness because it's an ordinary tool call rather than a protocol feature the client has to support. Setting a repo by local path also teaches it that URL-to-folder mapping, so asking for the same repo by URL later works even when the clone lives somewhere the folder scan would never look.
+
+That override lasts for the session and isn't saved machine-wide, on purpose: if it were global, having two projects open in two windows would mean one silently hijacking the other.
 
 One thing to be aware of: if you've got more than one local clone of the same repo, it'll pick whichever one it finds first, which might not be the one you meant. Normal one-clone-per-person setups are unaffected.
 

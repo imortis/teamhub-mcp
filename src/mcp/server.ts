@@ -1,17 +1,18 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { existsSync } from "node:fs";
 import * as hub from "./tools.js";
-import { resolveRepoRoot } from "./repo-resolver.js";
+import { resolveRepoRoot, resolveUrlToLocalPath } from "./repo-resolver.js";
+import { setCachedPath } from "./repo-cache.js";
 import { markSessionActive } from "./session-marker.js";
+import { findRepoRoot, getRemoteUrl } from "../git/repo.js";
 
 /**
- * Every tool operates on the project folder - resolved ONCE per server
- * process (i.e. once per session) via resolveRepoRoot: asks the user
- * directly which GitHub repo they're working on (MCP elicitation), which
- * doubles as team identity - whoever answers with the same repo URL shares
- * `.hub/` state - falling back to MCP `roots`/`process.cwd()` if the client
- * doesn't support elicitation. There's no separate workspace ID or auth
- * token: git repo access IS the access control. `memberName` is optional
+ * Every tool operates on the project folder, resolved once per server
+ * process (i.e. once per session) and then reused. `set_repo` can override
+ * it mid-session. There's no workspace ID or auth token - git repo access
+ * IS the access control, and two people are "on the same team" precisely
+ * when their clones push to the same remote. `memberName` is optional
  * everywhere and defaults to `git config user.name`.
  */
 export function buildMcpServer(): McpServer {
@@ -29,11 +30,71 @@ export function buildMcpServer(): McpServer {
     return resolvedDir;
   };
 
+  /** Which repo is in use, so the agent can state it and the user can catch a wrong one. */
+  const activeRepo = (dir: string) => ({ localPath: dir, remoteUrl: getRemoteUrl(dir) });
+
   const json = (value: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }] });
   const errorResult = (err: unknown) => ({
     content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
     isError: true,
   });
+
+  server.registerTool(
+    "set_repo",
+    {
+      title: "Set or change which repo this session works on",
+      description:
+        "Point this session at a specific repo, by GitHub URL or by local folder path. Use it when the user names a repo, says they're switching projects, or when the repo reported by get_context/get_handoff_brief isn't the one they meant. Pass `reset: true` to go back to automatic detection. The change applies to this session only - it is deliberately not saved machine-wide, so another window working on a different project isn't silently redirected.",
+      inputSchema: {
+        repoUrl: z.string().optional().describe("e.g. https://github.com/your-org/your-repo - resolved to a local clone on this machine."),
+        localPath: z.string().optional().describe("Absolute path to a local clone, if you already know it."),
+        reset: z.boolean().optional().describe("Forget the override and go back to detecting the repo automatically."),
+      },
+    },
+    async ({ repoUrl, localPath, reset }) => {
+      try {
+        if (reset) {
+          resolvedDir = null;
+          const dir = await cwd();
+          return json({ reset: true, activeRepo: activeRepo(dir), note: "Back to automatic detection." });
+        }
+
+        if (localPath) {
+          if (!existsSync(localPath)) throw new Error(`No such folder: ${localPath}`);
+          const root = findRepoRoot(localPath); // throws with a clear message if it isn't a git repo
+          resolvedDir = root;
+          markSessionActive(root);
+          // Learn the mapping, so asking for this repo by URL later works
+          // even when the clone lives somewhere the folder scan wouldn't
+          // look (a work directory, another drive, wherever).
+          const remote = getRemoteUrl(root);
+          if (remote) setCachedPath(remote, root);
+          return json({ activeRepo: activeRepo(root), how: "set directly from the path you gave" });
+        }
+
+        if (repoUrl) {
+          // Give the resolver the currently-detected folder as a hint, so
+          // "you're already in that repo" is recognised rather than searched for.
+          const hint = resolvedDir ?? (await cwd());
+          const { localPath: found, how } = resolveUrlToLocalPath(repoUrl, hint);
+          if (!found) {
+            return json({
+              error: `Couldn't find a local clone of ${repoUrl} on this machine.`,
+              how,
+              suggestion: "Clone it first, then call set_repo again with its folder path as `localPath`.",
+            });
+          }
+          resolvedDir = found;
+          markSessionActive(found);
+          return json({ activeRepo: activeRepo(found), how });
+        }
+
+        throw new Error("Pass repoUrl, localPath, or reset: true.");
+      } catch (err) {
+        return errorResult(err);
+      }
+    }
+  );
 
   server.registerTool(
     "get_context",
@@ -45,7 +106,8 @@ export function buildMcpServer(): McpServer {
     },
     async () => {
       try {
-        return json(hub.getContext(await cwd()));
+        const dir = await cwd();
+        return json({ activeRepo: activeRepo(dir), ...hub.getContext(dir) });
       } catch (err) {
         return errorResult(err);
       }
@@ -300,7 +362,8 @@ export function buildMcpServer(): McpServer {
     },
     async ({ scope, doneLimit }) => {
       try {
-        return json(hub.getHandoffBrief(await cwd(), { scope, doneLimit }));
+        const dir = await cwd();
+        return json({ activeRepo: activeRepo(dir), ...hub.getHandoffBrief(dir, { scope, doneLimit }) });
       } catch (err) {
         return errorResult(err);
       }

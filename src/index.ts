@@ -3,6 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { buildMcpServer } from "./mcp/server.js";
 import { getContext, getHandoffBrief, checkFileBeforeEdit } from "./mcp/tools.js";
 import { runInit } from "./init.js";
+import { findRepoRoot, getRemoteUrl } from "./git/repo.js";
 
 const args = process.argv.slice(2);
 const startDir = () => process.env.HUB_REPO_PATH || process.cwd();
@@ -44,8 +45,10 @@ try {
   // regardless of which harness/model is asking, so nobody has to
   // hand-explain context.
   if (args[0] === "handoff") {
-    const brief = getHandoffBrief(startDir());
-    console.log(JSON.stringify(brief, null, 2));
+    const dir = startDir();
+    const brief = getHandoffBrief(dir);
+    const root = findRepoRoot(dir);
+    console.log(JSON.stringify({ activeRepo: { localPath: root, remoteUrl: getRemoteUrl(root) }, ...brief }, null, 2));
     process.exit(0);
   }
 

@@ -41,36 +41,8 @@ export async function resolveRepoRoot(server: McpServer): Promise<string> {
     return candidate;
   }
 
-  // Does the auto-detected candidate already match what they said? Common
-  // case for harnesses that get cwd right (Claude Code) - confirms and
-  // caches it, so future sessions on other harnesses can reuse the mapping.
-  let candidateRoot: string | null = null;
-  try {
-    candidateRoot = findRepoRoot(candidate);
-  } catch {
-    candidateRoot = null;
-  }
-  if (candidateRoot) {
-    const remote = getRemoteUrl(candidateRoot);
-    if (remote && normalizeRemoteUrl(remote) === normalizeRemoteUrl(repoUrl)) {
-      setCachedPath(repoUrl, candidateRoot);
-      return candidateRoot;
-    }
-  }
-
-  // Known from a previous session on this machine?
-  const cached = getCachedPath(repoUrl);
-  if (cached && existsSync(cached)) {
-    return cached;
-  }
-
-  // Bounded search of common local folders (direct children only - fast,
-  // covers the ordinary "repos live under Desktop/home" case).
-  const found = searchCommonRootsForRemote(repoUrl);
-  if (found) {
-    setCachedPath(repoUrl, found);
-    return found;
-  }
+  const resolved = resolveUrlToLocalPath(repoUrl, candidate);
+  if (resolved.localPath) return resolved.localPath;
 
   // Last resort: ask directly where it's cloned.
   const localPath = await askLocalPath(server, repoUrl);
@@ -80,6 +52,49 @@ export async function resolveRepoRoot(server: McpServer): Promise<string> {
   }
 
   return candidate;
+}
+
+/**
+ * Turn a repo URL into a local clone path, without asking the user
+ * anything. Shared by the elicitation flow and by the `set_repo` tool, so
+ * "which folder is that repo?" is answered the same way regardless of how
+ * the URL arrived.
+ */
+export function resolveUrlToLocalPath(
+  repoUrl: string,
+  candidateHint?: string
+): { localPath: string | null; how: string } {
+  // Does the directory we already suspected match what they said? Common
+  // case for harnesses that get cwd right - confirms it and caches the
+  // mapping so other harnesses on this machine can reuse it later.
+  if (candidateHint) {
+    let candidateRoot: string | null = null;
+    try {
+      candidateRoot = findRepoRoot(candidateHint);
+    } catch {
+      candidateRoot = null;
+    }
+    if (candidateRoot) {
+      const remote = getRemoteUrl(candidateRoot);
+      if (remote && normalizeRemoteUrl(remote) === normalizeRemoteUrl(repoUrl)) {
+        setCachedPath(repoUrl, candidateRoot);
+        return { localPath: candidateRoot, how: "the folder already open matches that repo" };
+      }
+    }
+  }
+
+  const cached = getCachedPath(repoUrl);
+  if (cached && existsSync(cached)) {
+    return { localPath: cached, how: "remembered from a previous session on this machine" };
+  }
+
+  const found = searchCommonRootsForRemote(repoUrl);
+  if (found) {
+    setCachedPath(repoUrl, found);
+    return { localPath: found, how: "found by scanning your home/Desktop/Documents folders" };
+  }
+
+  return { localPath: null, how: "no local clone of that repo found on this machine" };
 }
 
 async function candidateViaRootsOrCwd(server: McpServer): Promise<string> {
