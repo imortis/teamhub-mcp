@@ -20,11 +20,25 @@ cd your-repo
 npx -y teamhub-mcp init
 ```
 
-That scaffolds `.mcp.json`, `.claude/settings.json`, and the hook scripts into your repo. One thing worth knowing: the npm package is `teamhub-mcp`, but the command it installs is `hub-server` — there's already an unrelated package called `hub-server` on npm, so typing `npx -y hub-server` will silently grab the wrong thing. Stick to `npx -y teamhub-mcp <command>`.
+Then **restart your coding agent** — config changes don't get picked up mid-session, and this trips people up.
 
-`init` won't clobber anything — it skips files that already exist unless you pass `--force`, and if you already have a `.claude/settings.json` it merges the hooks in rather than overwriting whatever else you've got configured there. Commit whatever it creates so teammates get the same setup the moment they clone the repo.
+To confirm it worked, ask your agent what MCP tools it has (you should see `get_handoff_brief`, `declare_task` and friends), or run `npx -y teamhub-mcp dashboard` in that folder for a plain-text summary with no agent involved.
 
-Want to poke at it without going through an agent? `npx -y teamhub-mcp dashboard` prints a plain-text summary of the current tasks and activity.
+`init` writes `.mcp.json` (Claude Code), `.agents/mcp_config.json` (Antigravity), `.claude/settings.json` for the hooks, and the hook scripts themselves. It skips anything that already exists unless you pass `--force`, and merges into an existing `.claude/settings.json` rather than overwriting your other settings. Commit what it creates so teammates get the same setup when they clone.
+
+### If you use Antigravity
+
+Antigravity doesn't read `.mcp.json` — that's a Claude Code convention. `init` writes `.agents/mcp_config.json` for it, but if your version doesn't pick that up, add this to `~/.gemini/config/mcp_config.json` yourself:
+
+```json
+{ "mcpServers": { "hub": { "command": "npx", "args": ["-y", "teamhub-mcp"] } } }
+```
+
+Cursor and OpenCode both use their own config locations too — check their docs and point them at the same command (`npx -y teamhub-mcp`).
+
+### A naming gotcha
+
+The npm package is `teamhub-mcp`, but the command it installs is `hub-server`. There's an unrelated package literally called `hub-server` on npm, so `npx -y hub-server` silently fetches the wrong thing. Always `npx -y teamhub-mcp <command>`.
 
 If you're working on teamhub-mcp itself rather than using the published package:
 

@@ -103,6 +103,22 @@ export function runInit(argv: string[]): void {
     report.push(`wrote: ${settingsPath}`);
   }
 
+  // .agents/mcp_config.json - Antigravity's workspace-level config.
+  // Antigravity does NOT read .mcp.json (that's a Claude Code convention),
+  // so without this an Antigravity user runs init, sees files appear, and
+  // gets nothing - the server is never registered on their side.
+  // Per Antigravity's docs this is the workspace equivalent of
+  // ~/.gemini/config/mcp_config.json; not verified against a live install.
+  const agentsDir = join(repoRoot, ".agents");
+  const agentsConfigPath = join(agentsDir, "mcp_config.json");
+  if (existsSync(agentsConfigPath) && !force) {
+    report.push(`skipped (already exists): ${agentsConfigPath}`);
+  } else {
+    mkdirSync(agentsDir, { recursive: true });
+    writeFileSync(agentsConfigPath, JSON.stringify(DEFAULT_MCP_JSON, null, 2) + "\n", "utf8");
+    report.push(`wrote: ${agentsConfigPath}`);
+  }
+
   // hooks/ - copy the actual scripts from this package.
   const hooksSrc = join(pkgRoot, "hooks");
   if (existsSync(hooksSrc)) {
@@ -113,6 +129,19 @@ export function runInit(argv: string[]): void {
 
   console.log(`hub-server init - set up ${repoRoot}\n`);
   for (const line of report) console.log(`  ${line}`);
-  console.log(`\nNext: commit these files so teammates who clone this repo get the same setup automatically.`);
-  console.log(`Re-run with --force to overwrite anything that already existed.`);
+  console.log(`
+Next steps:
+  1. Restart your coding agent (or start a new session) so it picks up the
+     new MCP config - it won't be noticed mid-session.
+  2. Check it worked: ask your agent what MCP tools it has, or run
+     \`npx -y teamhub-mcp dashboard\` in this folder.
+  3. Commit these files so teammates get the same setup when they clone.
+
+Using Antigravity? It doesn't read .mcp.json - that's a Claude Code file.
+A .agents/mcp_config.json was written for it, but if your version doesn't
+pick that up, add this to ~/.gemini/config/mcp_config.json by hand:
+
+  { "mcpServers": { "hub": { "command": "npx", "args": ["-y", "teamhub-mcp"] } } }
+
+Re-run with --force to overwrite anything that already existed.`);
 }
