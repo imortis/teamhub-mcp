@@ -55,6 +55,33 @@ const HOOK_ENTRIES: Record<string, { command: string; entry: any }[]> = {
 };
 
 /**
+ * Antigravity's hooks.json, which is a different shape from Claude Code's
+ * settings.json: the top level is a map of named hook SETS, and the events
+ * are PreToolUse / PostToolUse / PreInvocation / PostInvocation / Stop.
+ *
+ * Only PreInvocation and PreToolUse are used. PostToolUse is documented to
+ * return an empty object and so cannot tell the model anything, which makes
+ * it useless for correcting an agent's course - PreInvocation is the only
+ * channel on this harness that can inject text, so context loading and the
+ * "you skipped the shared plan" nudge both run from there.
+ *
+ * Matchers use Antigravity's own tool names (write_to_file,
+ * replace_file_content, multi_replace_file_content), not Claude Code's
+ * Edit/Write.
+ */
+const ANTIGRAVITY_HOOKS = {
+  "hub-server": {
+    PreInvocation: [{ hooks: [{ type: "command", command: "node hooks/antigravity/pre-invocation.mjs", timeout: 20 }] }],
+    PreToolUse: [
+      {
+        matcher: "write_to_file|replace_file_content|multi_replace_file_content",
+        hooks: [{ type: "command", command: "node hooks/antigravity/pre-edit-check.mjs", timeout: 15 }],
+      },
+    ],
+  },
+};
+
+/**
  * `hub-server init` - scaffolds everything a repo needs into the CURRENT
  * repo in one command: .mcp.json, .claude/settings.json hooks, and the
  * hook scripts themselves (copied from this package's own hooks/, so it
@@ -119,6 +146,29 @@ export function runInit(argv: string[]): void {
     report.push(`wrote: ${agentsConfigPath}`);
   }
 
+  // .agents/hooks.json - merged like the Claude Code settings file, since a
+  // team may already have their own hook sets registered here.
+  const agyHooksPath = join(agentsDir, "hooks.json");
+  mkdirSync(agentsDir, { recursive: true });
+  let agyHooks: any = {};
+  if (existsSync(agyHooksPath)) {
+    try {
+      agyHooks = JSON.parse(readFileSync(agyHooksPath, "utf8"));
+    } catch {
+      report.push(`WARNING: ${agyHooksPath} exists but isn't valid JSON - leaving it untouched, wire hooks manually.`);
+      agyHooks = null;
+    }
+  }
+  if (agyHooks) {
+    if (agyHooks["hub-server"] && !force) {
+      report.push(`skipped (already configured): ${agyHooksPath}`);
+    } else {
+      Object.assign(agyHooks, ANTIGRAVITY_HOOKS);
+      writeFileSync(agyHooksPath, JSON.stringify(agyHooks, null, 2) + "\n", "utf8");
+      report.push(`wrote: ${agyHooksPath}`);
+    }
+  }
+
   // hooks/ - copy the actual scripts from this package.
   const hooksSrc = join(pkgRoot, "hooks");
   if (existsSync(hooksSrc)) {
@@ -137,11 +187,10 @@ Next steps:
      \`npx -y teamhub-mcp dashboard\` in this folder.
   3. Commit these files so teammates get the same setup when they clone.
 
-Using Antigravity? It doesn't read .mcp.json - that's a Claude Code file.
-A .agents/mcp_config.json was written for it, but if your version doesn't
-pick that up, add this to ~/.gemini/config/mcp_config.json by hand:
-
-  { "mcpServers": { "hub": { "command": "npx", "args": ["-y", "teamhub-mcp"] } } }
+Using Antigravity? It doesn't read .mcp.json or .claude/ - those are Claude
+Code files. It gets .agents/mcp_config.json and .agents/hooks.json instead,
+both written above. If your version doesn't pick those up, copy them to
+~/.gemini/config/mcp_config.json and ~/.gemini/config/hooks.json by hand.
 
 Re-run with --force to overwrite anything that already existed.`);
 }

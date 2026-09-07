@@ -10,10 +10,14 @@
 
 import { runHubServer } from "./run-hub-server.mjs";
 
-export function fetchHubContext() {
+export function fetchHubContext(opts = {}) {
   let response;
   try {
-    response = runHubServer(["handoff"]);
+    // `cwd` matters on harnesses that run hooks from somewhere other than
+    // the repo root (Antigravity passes workspacePaths rather than setting
+    // the process directory) - without it, hub-server resolves the wrong
+    // repo, or none at all.
+    response = runHubServer(["handoff"], opts.cwd ? { cwd: opts.cwd } : {});
   } catch {
     // hub-server not installed, not a git repo, or unreachable - degrade
     // silently so this never blocks a session.

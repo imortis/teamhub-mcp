@@ -29,6 +29,7 @@
 
 import { runHubServer } from "../lib/run-hub-server.mjs";
 import { activeWithinMs } from "../lib/session-marker.mjs";
+import { gitRootOf } from "../lib/repo-root.mjs";
 
 const GATE_WINDOW_MS = 60 * 60 * 1000; // 1 hour
 
@@ -65,8 +66,10 @@ try {
 }
 if (!filePath) process.exit(0);
 
-// Gate: has this repo's coordination tools been used recently?
-if (!activeWithinMs(process.cwd(), GATE_WINDOW_MS)) {
+// Gate: has this repo's coordination tools been used recently? Hash the
+// git root, not the raw cwd - the MCP server keys its marker by the root,
+// so a session started in a subdirectory would otherwise never match.
+if (!activeWithinMs(gitRootOf(process.cwd()), GATE_WINDOW_MS)) {
   deny(
     "hub-server: call get_handoff_brief first. This repo is shared with teammates using their own AI agents - " +
       "editing without checking current tasks/plan/recent changes risks duplicating or conflicting with work already " +

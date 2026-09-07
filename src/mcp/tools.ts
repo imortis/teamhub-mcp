@@ -390,7 +390,8 @@ export function getTaskHistory(cwd: string, taskId: string): { history: { commit
  */
 export function checkFileBeforeEdit(
   cwd: string,
-  filePath: string
+  filePath: string,
+  memberName?: string
 ): {
   notes: (FileNote & { anchorStatus: AnchorStatus })[];
   recentCommitters: { author: string; when: string; subject: string }[];
@@ -398,9 +399,14 @@ export function checkFileBeforeEdit(
 } {
   const root = repoRoot(cwd);
   const sync = syncBeforeRead(root);
+  // Exclude the caller's own commits, same as every other recentCommitters
+  // call site - without this, your own recent commit to this exact file
+  // reads back as "someone ELSE touched this", which is a false conflict
+  // warning on the single most common case (you, continuing your own work).
+  const member = actor(root, memberName);
   return {
     notes: withAnchorStatus(root, listFileNotes(root, filePath)),
-    recentCommitters: recentCommitters(root, { paths: [filePath], windowSeconds: 900 }),
+    recentCommitters: recentCommitters(root, { paths: [filePath], windowSeconds: 900, excludeAuthor: member }),
     syncMessage: sync.message,
   };
 }

@@ -94,13 +94,15 @@ One file per record is the important decision here. Two people writing "at the s
 
 No login, no auth tool. Every tool takes an optional `memberName`, and if you don't pass one it just uses `git config user.name`.
 
+There are also two MCP prompts — `start_work` and `finish_task` — for when you want to force the right sequence yourself instead of hoping the model calls the tools unprompted (in Claude Code these show up as `/mcp__hub-server__start_work` etc). `start_work` loads the live handoff brief and states the order to work in; `finish_task` pulls the real diff for a task and walks through closing it out properly. Every tool result also carries a `nextStep` field computed from the actual state that came back — a real task ID to claim, a real warning to act on — because a model reads a tool's description once, when deciding what to call, but reads the result in the middle of the work, which is the moment that actually decides whether it keeps following the sequence.
+
 ## Where it actually works today
 
 Hooks are plain Node scripts (`.mjs`), not bash — Node's already a hard requirement, so this avoids needing Git Bash or WSL on Windows. This wasn't just a style choice: npm installs `hub-server` as a `.cmd` file on Windows, which Node can't run directly without a shell, and getting that right (safely, without the argument-injection issues that come with shelling out carelessly) took some real work.
 
 **Claude Code** is the one I've actually verified end to end. The `SessionStart` hook really does get its output into the model's context — I checked by putting a made-up string in the hook and asking a fresh session if it saw anything unusual, and it reported the string back. The `PreToolUse` enforcement gate works too: I ran a real `claude -p` session, watched it get denied on a raw edit, watched it correctly call `get_handoff_brief` to clear the gate, then watched the edit go through. It's not bulletproof — a blocked model can still route around it through Bash instead of Edit, and it can only catch built-in tool calls, not MCP calls directly, so the gate works by having the MCP server itself leave a marker the hook can check. It also only enforces checking in *before* you edit, not recording what you did *afterward* — there's no equally clean hook for that yet.
 
-**Antigravity** should get context injected the same way, but I haven't been able to verify it live — there's no scriptable CLI on my machine to test it the way I could with Claude Code. The enforcement gate isn't built for it at all: Antigravity's docs mention something that might allow blocking a tool call, but it's not confirmed, and I'd rather leave it out than ship something that looks like it works and quietly doesn't.
+**Antigravity** gets context injected via its `PreInvocation` hook, which fires before every model call and is the only one of its hooks that can actually put text in front of the model — I checked, and `PostToolUse` there is documented to return nothing usable. On the first model call of a conversation it injects the full handoff brief; on later calls, if nothing in this repo's coordination tools has been touched in the last hour, it injects a one-line correction telling the model to go call `get_handoff_brief`, throttled to once every 5 minutes so it doesn't nag before every single turn. There's also a `PreToolUse` hook that fires before an edit and, deliberately, stays completely silent unless a teammate has committed to that *exact* file in the last 15 minutes — at which point it returns `ask` rather than `deny`, since a person is right there and this is a judgement call, not a rule violation. Both are covered by an automated test suite that drives the real hook scripts and a real throwaway git repo end to end, but I don't have a live Antigravity install to confirm against, and there's an open upstream report (cmux #5358) of Antigravity rejecting `PreToolUse` responses outright — which is exactly why that hook is built to fail toward silence, not toward blocking, and can be turned off entirely with `HUB_GATE=off` if it misbehaves for you.
 
 **Cursor** and **OpenCode** have hooks written for them but I haven't tested either against a real install. **Codex CLI** has nothing yet — there's no session-start hook to attach to upstream, so it'd need a different approach (wrapping the binary) that isn't built.
 
@@ -140,7 +142,7 @@ I looked into this seriously before deciding against it. There's a study measuri
 - Dependencies are a warning at claim time, not a hard block. If you want to start something that isn't ready yet, nothing stops you — you're just told.
 - Small `hub:` commits pile up fast. Might batch these later if it turns out to bother people in practice.
 - If there's no git remote (a solo project, or just testing), everything still works — it just skips the sync step.
-- Cursor and OpenCode hooks exist but haven't been tested against real installs. Antigravity doesn't have an enforcement gate yet.
+- Cursor and OpenCode hooks exist but haven't been tested against real installs. Antigravity's hooks are built and covered by automated tests, but not yet confirmed against a live Antigravity install.
 - I'm maintaining this alone, and it depends on hook/MCP APIs from several companies that are all still changing quickly. Expect some breakage as those move.
 
 ## What's next
@@ -150,6 +152,7 @@ I looked into this seriously before deciding against it. There's a study measuri
 - A small local web dashboard on top of the same data `dashboard --json` already returns.
 - Turning the scope-overlap warning into an actual block, with a way to negotiate instead of just flagging it.
 - The `PreToolUse` gate for Cursor, once I can confirm it actually works there.
+- Confirming the Antigravity hooks against a real install, not just the test suite.
 - Role-based visibility, surfacing tasks on GitHub PRs, multi-repo setups.
 
 ## Contributing
