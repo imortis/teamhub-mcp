@@ -47,6 +47,13 @@ function actor(root: string, memberName?: string): string {
   return memberName?.trim() || getMemberName(root);
 }
 
+
+/** "Pranav via claude-code" for commit subjects - the tool name only, no version, to keep git log scannable. */
+function byline(member: string, agent?: string | null): string {
+  const short = agent ? String(agent).split(" ")[0] : null;
+  return short ? `${member} via ${short}` : member;
+}
+
 export function getContext(cwd: string): Context & { syncMessage?: string } {
   const root = repoRoot(cwd);
   const sync = syncBeforeRead(root);
@@ -59,7 +66,7 @@ export function getContext(cwd: string): Context & { syncMessage?: string } {
 
 export function declareTask(
   cwd: string,
-  input: { memberName?: string; title: string; scope: string[]; declaredInterface?: string; assumptions?: string; dependsOn?: string[] }
+  input: { memberName?: string; agent?: string | null; title: string; scope: string[]; declaredInterface?: string; assumptions?: string; dependsOn?: string[] }
 ): {
   task: Task;
   conflicts: Task[];
@@ -95,6 +102,7 @@ export function declareTask(
     scope: input.scope,
     status: "todo",
     owner: null,
+    agent: input.agent ?? null,
     declaredInterface: input.declaredInterface ?? null,
     assumptions: input.assumptions ?? null,
     completion: null,
@@ -105,7 +113,7 @@ export function declareTask(
     updatedAt: now(),
   };
   const path = writeTask(root, task);
-  commitAndPush(root, [relativeToRepo(root, path)], `hub: declare task "${task.title}" (${member})`);
+  commitAndPush(root, [relativeToRepo(root, path)], `hub: declare task "${task.title}" (${byline(member, input.agent)})`);
 
   return {
     task,
@@ -133,7 +141,7 @@ function resolveBlockedBy(root: string, task: Task): BlockedBy[] {
 
 export function claimTask(
   cwd: string,
-  input: { memberName?: string; taskId: string }
+  input: { memberName?: string; agent?: string | null; taskId: string }
 ): Task & {
   recentActivityNearby: { author: string; when: string; subject: string }[];
   blockedBy?: BlockedBy[];
@@ -163,6 +171,7 @@ export function claimTask(
   const updated: Task = {
     ...existing,
     owner: member,
+    agent: input.agent ?? existing.agent,
     status: "claimed",
     // Mark where work starts, so get_diff_for_task has something to diff
     // against later. Don't overwrite it if this task was claimed before.
@@ -171,7 +180,7 @@ export function claimTask(
   };
   const path = writeTask(root, updated);
 
-  commitAndPush(root, [relativeToRepo(root, path)], `hub: ${member} claims "${updated.title}"`, () => {
+  commitAndPush(root, [relativeToRepo(root, path)], `hub: ${byline(member, input.agent)} claims "${updated.title}"`, () => {
     // Push was rejected - a teammate pushed first. Re-check before retrying:
     // if THEY claimed this exact task in the meantime, surface a real
     // conflict instead of silently overwriting their claim.
@@ -192,6 +201,7 @@ export function updateTaskStatus(
   cwd: string,
   input: {
     memberName?: string;
+    agent?: string | null;
     taskId: string;
     status: TaskStatus;
     completion?: { whatWasBuilt: string; decisions?: Decision[]; filesChanged?: FileChange[]; knownLimitations?: string; nextSteps?: string };
@@ -218,12 +228,13 @@ export function updateTaskStatus(
   const updated: Task = {
     ...existing,
     status: input.status,
+    agent: input.agent ?? existing.agent,
     completion,
     abandonReason: input.abandonReason ?? existing.abandonReason,
     updatedAt: now(),
   };
   const path = writeTask(root, updated);
-  commitAndPush(root, [relativeToRepo(root, path)], `hub: ${member} sets "${updated.title}" -> ${input.status}`);
+  commitAndPush(root, [relativeToRepo(root, path)], `hub: ${byline(member, input.agent)} sets "${updated.title}" -> ${input.status}`);
 
   // Catches the "marked done, but the real code never left this laptop"
   // pattern (observed twice) at the moment it happens, not weeks later when
@@ -245,7 +256,7 @@ export function updateTaskStatus(
 
 export function logActivity(
   cwd: string,
-  input: { memberName?: string; kind: string; detail: string; files?: string[] }
+  input: { memberName?: string; agent?: string | null; kind: string; detail: string; files?: string[] }
 ): ActivityEvent {
   const root = repoRoot(cwd);
   // Sync BEFORE committing, not just on retry-after-rejection: otherwise a
@@ -260,19 +271,20 @@ export function logActivity(
   const event: ActivityEvent = {
     id: nanoid(),
     member,
+    agent: input.agent ?? null,
     kind: input.kind,
     detail: input.detail,
     files: input.files ?? [],
     createdAt: now(),
   };
   const path = writeActivity(root, event);
-  commitAndPush(root, [relativeToRepo(root, path)], `hub: ${member} activity - ${input.kind}`);
+  commitAndPush(root, [relativeToRepo(root, path)], `hub: ${byline(member, input.agent)} activity - ${input.kind}`);
   return event;
 }
 
 export function recordFileNote(
   cwd: string,
-  input: { memberName?: string; filePath: string; summary: string; reasoning?: string }
+  input: { memberName?: string; agent?: string | null; filePath: string; summary: string; reasoning?: string }
 ): FileNote {
   const root = repoRoot(cwd);
   // Same reasoning as logActivity: sync before committing, not just on
@@ -285,6 +297,7 @@ export function recordFileNote(
   const note: FileNote = {
     id: nanoid(),
     member,
+    agent: input.agent ?? null,
     filePath: input.filePath,
     summary: input.summary,
     reasoning: input.reasoning ?? null,
@@ -294,7 +307,7 @@ export function recordFileNote(
     createdAt: now(),
   };
   const path = writeFileNote(root, note);
-  commitAndPush(root, [relativeToRepo(root, path)], `hub: ${member} note on ${input.filePath}`);
+  commitAndPush(root, [relativeToRepo(root, path)], `hub: ${byline(member, input.agent)} note on ${input.filePath}`);
   return note;
 }
 

@@ -19,6 +19,7 @@ function normalize(raw: any): Task {
   if (raw.abandonReason === undefined) raw.abandonReason = null;
   if (!Array.isArray(raw.dependsOn)) raw.dependsOn = [];
   if (raw.baseCommit === undefined) raw.baseCommit = null;
+  if (raw.agent === undefined) raw.agent = null;
   return raw as Task;
 }
 

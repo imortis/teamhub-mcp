@@ -33,6 +33,19 @@ export function buildMcpServer(): McpServer {
   /** Which repo is in use, so the agent can state it and the user can catch a wrong one. */
   const activeRepo = (dir: string) => ({ localPath: dir, remoteUrl: getRemoteUrl(dir) });
 
+  /**
+   * Which coding agent is connected, from the client's own MCP handshake
+   * (e.g. "claude-code 2.1.0", "antigravity 2.0"). Recorded alongside the
+   * human's name on anything written, since the same person driving two
+   * different agents can leave noticeably different records - and a reader
+   * deserves to know whose judgement they're inheriting.
+   */
+  const agentLabel = (): string | null => {
+    const info = server.server.getClientVersion();
+    if (!info?.name) return null;
+    return info.version ? `${info.name} ${info.version}` : info.name;
+  };
+
   const json = (value: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }] });
   const errorResult = (err: unknown) => ({
     content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
@@ -136,7 +149,7 @@ export function buildMcpServer(): McpServer {
     },
     async ({ memberName, title, scope, declaredInterface, assumptions, dependsOn }) => {
       try {
-        return json(hub.declareTask(await cwd(), { memberName, title, scope, declaredInterface, assumptions, dependsOn }));
+        return json(hub.declareTask(await cwd(), { memberName, agent: agentLabel(), title, scope, declaredInterface, assumptions, dependsOn }));
       } catch (err) {
         return errorResult(err);
       }
@@ -153,7 +166,7 @@ export function buildMcpServer(): McpServer {
     },
     async ({ memberName, taskId }) => {
       try {
-        return json(hub.claimTask(await cwd(), { memberName, taskId }));
+        return json(hub.claimTask(await cwd(), { memberName, agent: agentLabel(), taskId }));
       } catch (err) {
         return errorResult(err);
       }
@@ -192,7 +205,7 @@ export function buildMcpServer(): McpServer {
     },
     async ({ memberName, taskId, status, completion, abandonReason }) => {
       try {
-        return json(hub.updateTaskStatus(await cwd(), { memberName, taskId, status, completion, abandonReason }));
+        return json(hub.updateTaskStatus(await cwd(), { memberName, agent: agentLabel(), taskId, status, completion, abandonReason }));
       } catch (err) {
         return errorResult(err);
       }
@@ -214,7 +227,7 @@ export function buildMcpServer(): McpServer {
     },
     async ({ memberName, kind, detail, files }) => {
       try {
-        return json(hub.logActivity(await cwd(), { memberName, kind, detail, files }));
+        return json(hub.logActivity(await cwd(), { memberName, agent: agentLabel(), kind, detail, files }));
       } catch (err) {
         return errorResult(err);
       }
@@ -236,7 +249,7 @@ export function buildMcpServer(): McpServer {
     },
     async ({ memberName, filePath, summary, reasoning }) => {
       try {
-        return json(hub.recordFileNote(await cwd(), { memberName, filePath, summary, reasoning }));
+        return json(hub.recordFileNote(await cwd(), { memberName, agent: agentLabel(), filePath, summary, reasoning }));
       } catch (err) {
         return errorResult(err);
       }

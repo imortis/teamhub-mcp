@@ -8,7 +8,7 @@ export function listFileNotes(repoRoot: string, filePath: string): FileNote[] {
   if (!existsSync(dir)) return [];
   return readdirSync(dir)
     .filter((f) => f.endsWith(".json"))
-    .map((f) => JSON.parse(readFileSync(join(dir, f), "utf8")) as FileNote)
+    .map((f) => { const n = JSON.parse(readFileSync(join(dir, f), "utf8")); if (n.agent === undefined) n.agent = null; return n as FileNote; })
     .sort((a, b) => a.createdAt - b.createdAt);
 }
 

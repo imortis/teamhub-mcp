@@ -31,6 +31,13 @@ export interface Task {
   scope: string[];
   status: TaskStatus;
   owner: string | null;
+  /**
+   * Which coding agent last acted on this task (claimed it, or wrote its
+   * completion). Useful when reading someone else's completion report:
+   * knowing whether Claude or Gemini wrote it is real context, given they
+   * summarise and decide differently.
+   */
+  agent: string | null;
   declaredInterface: string | null;
   assumptions: string | null;
   completion: TaskCompletion | null;
@@ -64,6 +71,14 @@ export interface BlockedBy {
 export interface ActivityEvent {
   id: string;
   member: string;
+  /**
+   * Which coding agent produced this, self-reported over MCP during the
+   * handshake (e.g. "claude-code 2.1.0"). The member is the person; this is
+   * the tool they were driving. Worth recording because the same person on
+   * two different agents can leave quite different records, and a reader
+   * benefits from knowing which model's judgement they're inheriting.
+   */
+  agent: string | null;
   kind: string;
   detail: string;
   files: string[];
@@ -85,6 +100,8 @@ export interface AnchorCheck extends Anchor {
 export interface FileNote {
   id: string;
   member: string;
+  /** Which coding agent wrote this note - see ActivityEvent.agent. */
+  agent: string | null;
   filePath: string;
   summary: string;
   reasoning: string | null;

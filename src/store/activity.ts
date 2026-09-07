@@ -8,7 +8,7 @@ export function listActivity(repoRoot: string, limit = 25): ActivityEvent[] {
   if (!existsSync(dir)) return [];
   return readdirSync(dir)
     .filter((f) => f.endsWith(".json"))
-    .map((f) => JSON.parse(readFileSync(join(dir, f), "utf8")) as ActivityEvent)
+    .map((f) => { const e = JSON.parse(readFileSync(join(dir, f), "utf8")); if (e.agent === undefined) e.agent = null; return e as ActivityEvent; })
     .sort((a, b) => b.createdAt - a.createdAt)
     .slice(0, limit);
 }
