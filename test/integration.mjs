@@ -249,6 +249,11 @@ async function testServer() {
     });
     check("clean completion has no warnings", goodDone.body?.uncommittedFileWarnings === undefined);
     check("clean completion nextStep suggests record_file_note", /record_file_note/.test(goodDone.body?.nextStep ?? ""), goodDone.body?.nextStep);
+    check(
+      "a completion with decisions is told to check the decisions against design.md",
+      /update_plan/.test(goodDone.body?.nextStep ?? "") && /design\.md/.test(goodDone.body?.nextStep ?? ""),
+      goodDone.body?.nextStep
+    );
 
     const note = await client.call("record_file_note", { filePath: "api-auth.ts", summary: "auth entry point", reasoning: "kept flat for now" });
     check("record_file_note stores agent", note.body?.agent === "test-harness 9.9.9");

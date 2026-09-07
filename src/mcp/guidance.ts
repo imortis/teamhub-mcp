@@ -85,7 +85,21 @@ export function afterUpdateStatus(task: Task, uncommitted: string[] | undefined)
     return `DO NOT tell the user this is done yet. The files you listed are not committed and pushed, so teammates will pull this task marked "done" and find none of the code. Commit and push them for real, then say it is finished.`;
   }
   if (task.status === "done") {
-    return `Task closed and pushed. For any file in filesChanged where a future reader would ask "why is it like this", call record_file_note - the completion report says what was built, a file note says why that file looks the way it does. Then call get_context to see what is left.`;
+    const parts = [`Task closed and pushed.`];
+    // A decision is stored on this task's completion, but nothing here
+    // cross-checks it against design.md - a decision that quietly picks a
+    // different service/interface/approach than the plan describes will
+    // sit right next to that stale plan until someone notices by hand, and
+    // a teammate who reads design.md alone will build against the old one.
+    if ((task.completion?.decisions?.length ?? 0) > 0) {
+      parts.push(
+        `You recorded ${task.completion!.decisions.length} decision(s). If any of them chose something design.md doesn't already describe - a different service, a different interface, a different approach than what was planned - call get_plan and then update_plan now. A decision that only lives in this one task's completion is easy for the next agent to miss if the plan doc they read at session start still describes the old approach.`
+      );
+    }
+    parts.push(
+      `For any file in filesChanged where a future reader would ask "why is it like this", call record_file_note - the completion report says what was built, a file note says why that file looks the way it does. Then call get_context to see what is left.`
+    );
+    return parts.join(" ");
   }
   if (task.status === "abandoned") {
     return `Marked abandoned with a reason, so teammates see a dead end instead of a task that looks like it is still being worked on. Call get_context to pick up what is next.`;
