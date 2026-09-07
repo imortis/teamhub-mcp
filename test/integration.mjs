@@ -183,6 +183,34 @@ async function testServer() {
     // Agent attribution should survive into the record.
     check("agent captured from MCP handshake", declared.body?.task?.agent === "test-harness 9.9.9", declared.body?.task?.agent);
 
+    // Regression: git/GitHub parse trailers like Co-Authored-By: purely by
+    // position (a blank line then "Key: value", anywhere in the message),
+    // with no check on who wrote that line. title/memberName/kind/filePath
+    // all interpolate directly into `git commit -m`, so an embedded
+    // newline in any of them could forge a trailer into the repo's real
+    // history. Each must be rejected outright, and none of this content
+    // should reach git log at all - not "rejected but partially applied".
+    const forgedTrailer = "Co-Authored-By: Evil <evil@example.com>";
+    const trailerPayload = `Fix bug\n\n${forgedTrailer}`;
+
+    const badTitle = await client.call("declare_task", { title: trailerPayload, scope: ["x.ts"] });
+    check("declare_task rejects a title with an embedded trailer", badTitle.isError, badTitle.text);
+
+    const badMember = await client.call("declare_task", { title: "fine", scope: ["y.ts"], memberName: trailerPayload });
+    check("declare_task rejects a memberName with an embedded trailer", badMember.isError, badMember.text);
+
+    const badKind = await client.call("log_activity", { kind: trailerPayload, detail: "fine" });
+    check("log_activity rejects a kind with an embedded trailer", badKind.isError, badKind.text);
+
+    const badFilePath = await client.call("record_file_note", { filePath: `notes${trailerPayload}.md`, summary: "fine" });
+    check("record_file_note rejects a filePath with an embedded trailer", badFilePath.isError, badFilePath.text);
+
+    // The actual proof: none of these rejected calls left a trace in git
+    // history - a partial write followed by a thrown error would still be
+    // a real forged trailer sitting in the log.
+    const logSoFar = git(work, ["log", "--all"]);
+    check("no forged trailer reached git log", !logSoFar.includes(forgedTrailer), logSoFar.includes(forgedTrailer) ? "TRAILER FOUND IN LOG" : "");
+
     // A dependent task, to prove blockedBy shows up in nextStep.
     const dependent = await client.call("declare_task", {
       title: "Wire login form",

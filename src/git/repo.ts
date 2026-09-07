@@ -266,12 +266,31 @@ export function syncBeforeRead(repoRoot: string): { synced: boolean; message?: s
  * pushed to .hub/ first. Throws HubGitConflict if a targeted re-check
  * (`onConflict`) reports the specific record was concurrently modified.
  */
+/**
+ * Every commit message here is built by interpolating free-text fields
+ * (a task title, a member name, an agent label, an activity kind) straight
+ * into what gets passed to `git commit -m`. Git and GitHub parse trailers
+ * like `Co-Authored-By:` purely by position - a blank line followed by a
+ * "Key: value" line, anywhere in the message - with no check on who wrote
+ * that line. A title like `Fix bug\n\nCo-Authored-By: x <x@evil.com>` would
+ * forge a contributor into the repo's real history. Reject rather than
+ * silently strip: a field that already contains a genuine newline losing
+ * everything after the first line would be its own confusing bug.
+ */
+export function assertSingleLineField(fieldName: string, value: string): string {
+  if (/[\r\n]/.test(value)) {
+    throw new Error(`${fieldName} cannot contain a line break (it becomes part of a git commit message).`);
+  }
+  return value;
+}
+
 export function commitAndPush(
   repoRoot: string,
   paths: string[],
   message: string,
   onConflict?: () => void
 ): { pushed: boolean; message?: string } {
+  assertSingleLineField("commit message", message);
   const add = git(repoRoot, ["add", "--", ...paths]);
   if (!add.ok) throw new Error(`git add failed: ${add.stderr}`);
 

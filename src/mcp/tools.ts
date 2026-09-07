@@ -10,6 +10,7 @@ import {
   recentCommitters,
   fileVersionHistory,
   diffSince,
+  assertSingleLineField,
   type DiffSince,
 } from "../git/repo.js";
 import { relativeToRepo } from "../store/paths.js";
@@ -44,7 +45,12 @@ function repoRoot(cwd: string): string {
 }
 
 function actor(root: string, memberName?: string): string {
-  return memberName?.trim() || getMemberName(root);
+  const name = memberName?.trim() || getMemberName(root);
+  // Rejected early, before anything is written - member appears in every
+  // commit message this module builds (see assertSingleLineField), and
+  // catching it here means a bad memberName never gets as far as writing a
+  // task/activity/note file that then has to be discarded on failure.
+  return assertSingleLineField("memberName", name);
 }
 
 
@@ -81,6 +87,9 @@ export function declareTask(
   // (including the declarer, via a follow-up claim_task call) - this is what
   // makes "one person scaffolds a plan of unclaimed tasks" actually work.
   const member = actor(root, input.memberName);
+  // Rejected before anything is written - title ends up in every commit
+  // message this task's lifecycle produces (declare, claim, status changes).
+  assertSingleLineField("title", input.title);
 
   const active = listTasks(root).filter((t) => ACTIVE_STATUSES.includes(t.status));
   const conflicts = active.filter((t) => overlappingScope(t.scope, input.scope).length > 0);
@@ -267,6 +276,9 @@ export function logActivity(
   // instead of the normal "1 commit behind, trivial fast-forward" case.
   syncBeforeRead(root);
   const member = actor(root, input.memberName);
+  // Rejected before anything is written - kind lands directly in this
+  // event's commit message.
+  assertSingleLineField("kind", input.kind);
 
   const event: ActivityEvent = {
     id: nanoid(),
