@@ -535,12 +535,45 @@ async function testClaudeCodeHookInjection() {
   console.log("\nClaude Code hook");
   const { base, work } = makeRepo();
   try {
-    // The gate denies any edit until this repo's coordination tools have
-    // been used - mark it active directly (the same call the real MCP
-    // server makes on every tool call) so this test reaches the advisory
-    // check-file path this fix is actually about, rather than the gate.
+    // Baseline: nothing has marked this repo active anywhere yet, so a raw
+    // edit must be denied.
+    const denied = runHook("claude-code/pre-edit-check.mjs", { tool_input: { file_path: "app.js" } }, work);
+    let deniedParsed = null;
+    try {
+      deniedParsed = JSON.parse(denied.stdout);
+    } catch {
+      /* handled below */
+    }
+    check(
+      "gate denies an edit before any coordination tool has run",
+      deniedParsed?.hookSpecificOutput?.permissionDecision === "deny",
+      denied.stdout.slice(0, 200)
+    );
+
+    // Regression: the MCP server (writer) and this hook (reader) arrive at
+    // "the repo root" via different code paths, and on a case-insensitive
+    // filesystem (NTFS, default APFS) that can produce two different-CASED
+    // strings for the exact same folder - which, hashed naively, would
+    // make the gate always look uncoordinated. Mark active under a
+    // deliberately different-cased path and confirm the hook (using the
+    // normal-cased path) still recognizes it.
     const { markSessionActive } = await import("../dist/mcp/session-marker.js");
-    markSessionActive(work);
+    const differentlyCased = work.toUpperCase();
+    check("the casing variant actually differs from the real path (test is meaningful)", differentlyCased !== work);
+    markSessionActive(differentlyCased);
+
+    const nowOpen = runHook("claude-code/pre-edit-check.mjs", { tool_input: { file_path: "app.js" } }, work);
+    let nowOpenParsed = null;
+    try {
+      nowOpenParsed = JSON.parse(nowOpen.stdout);
+    } catch {
+      /* absence of a deny response is itself the pass condition here */
+    }
+    check(
+      "gate recognizes a marker written under a different-cased path to the same repo",
+      nowOpenParsed?.hookSpecificOutput?.permissionDecision !== "deny",
+      nowOpen.stdout.slice(0, 200)
+    );
 
     const injectionMarker = join(base, "injected-by-claude-hook.txt");
     const injectionPayload = `evil & echo INJECTED > "${injectionMarker}"`;
