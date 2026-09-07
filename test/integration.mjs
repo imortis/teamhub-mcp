@@ -11,7 +11,7 @@
 // Both are checked here.
 
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -283,6 +283,25 @@ async function testServer() {
     // Errors must come back as clean tool errors, never crash the process.
     const bad = await client.call("claim_task", { taskId: "does-not-exist" });
     check("unknown task errors cleanly", bad.isError && /No task/.test(bad.text), bad.text);
+
+    // Path traversal: a taskId is a raw MCP argument that gets joined
+    // straight into a filesystem path (.hub/tasks/<id>.json). Every entry
+    // point that resolves an ID to a path must reject one shaped like an
+    // escape attempt, not silently read or write outside .hub/tasks.
+    const traversalId = "../../../../outside";
+    for (const [tool, args] of [
+      ["claim_task", { taskId: traversalId }],
+      ["update_task_status", { taskId: traversalId, status: "done", completion: { whatWasBuilt: "x" } }],
+      ["get_diff_for_task", { taskId: traversalId }],
+      ["get_task_history", { taskId: traversalId }],
+    ]) {
+      const r = await client.call(tool, args);
+      check(`${tool} rejects a path-traversal taskId instead of touching disk`, r.isError, r.text);
+    }
+    // The traversal targets 4 levels above .hub/tasks, which lands in the
+    // tmp root shared by every test repo - confirms nothing was ever
+    // written there, across the whole suite, not just this one repo.
+    check("no file escaped .hub/tasks onto disk", !existsSync(join(tmpdir(), "outside.json")));
 
     // ------------------------------------------------------------- prompts
     const prompts = (await client.send("prompts/list")).result?.prompts ?? [];
