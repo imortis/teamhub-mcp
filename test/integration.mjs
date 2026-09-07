@@ -453,6 +453,26 @@ async function testAntigravityHooks() {
     // A tool call with no recognisable file argument must be ignored.
     const noPath = runHook("antigravity/pre-edit-check.mjs", { toolCall: { name: "write_to_file", args: { Foo: 1 } }, workspacePaths: [work] }, work);
     check("pre-edit-check ignores calls with no file path", noPath.status === 0 && noPath.stdout === "");
+
+    // Regression: the file path here is LLM-influenced data - wherever the
+    // model decided to edit, which can reflect prompt-injected repo
+    // content. On Windows this hook invokes the hub-server CLI through
+    // cmd.exe (npm's global bin is a .cmd shim, which Node cannot exec
+    // without a shell), and cmd.exe re-parses whatever text sits in that
+    // command line - a path containing shell metacharacters used to run
+    // as a second command once it reached run-hub-server.mjs's argv. It
+    // now travels via an environment variable instead, which cmd.exe never
+    // re-parses. Prove the exploit is actually closed, not just that nothing
+    // crashes: the injected command must not have run.
+    const injectionMarker = join(base, "injected-by-shell.txt");
+    const injectionPayload = `evil & echo INJECTED > "${injectionMarker}"`;
+    const injected = runHook(
+      "antigravity/pre-edit-check.mjs",
+      { toolCall: { name: "write_to_file", args: { TargetFile: injectionPayload } }, workspacePaths: [work] },
+      work
+    );
+    check("pre-edit-check survives a shell-metacharacter file path without crashing", injected.status === 0, injected.stderr.slice(0, 300));
+    check("no command executed via the shelled-out hub-server invocation", !existsSync(injectionMarker));
   } finally {
     rmSync(base, { recursive: true, force: true });
   }
@@ -483,8 +503,30 @@ async function testInit() {
   }
 }
 
+async function testClaudeCodeHookInjection() {
+  console.log("\nClaude Code hook");
+  const { base, work } = makeRepo();
+  try {
+    // The gate denies any edit until this repo's coordination tools have
+    // been used - mark it active directly (the same call the real MCP
+    // server makes on every tool call) so this test reaches the advisory
+    // check-file path this fix is actually about, rather than the gate.
+    const { markSessionActive } = await import("../dist/mcp/session-marker.js");
+    markSessionActive(work);
+
+    const injectionMarker = join(base, "injected-by-claude-hook.txt");
+    const injectionPayload = `evil & echo INJECTED > "${injectionMarker}"`;
+    const r = runHook("claude-code/pre-edit-check.mjs", { tool_input: { file_path: injectionPayload } }, work);
+    check("claude-code pre-edit-check survives a shell-metacharacter file path", r.status === 0, r.stderr.slice(0, 300));
+    check("no command executed via the shelled-out hub-server invocation (Claude Code hook)", !existsSync(injectionMarker));
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+}
+
 await testServer();
 await testAntigravityHooks();
+await testClaudeCodeHookInjection();
 await testInit();
 
 console.log(`\n${passed} passed, ${failures.length} failed`);

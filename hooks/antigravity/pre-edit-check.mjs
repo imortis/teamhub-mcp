@@ -67,9 +67,14 @@ if (!filePath) process.exit(0);
 const workspace = Array.isArray(input.workspacePaths) && input.workspacePaths[0] ? input.workspacePaths[0] : process.cwd();
 const repoRoot = gitRootOf(workspace);
 
+// filePath goes through the environment, not argv - see the comment in
+// src/index.ts's check-file handler for why (cmd.exe re-parses its own
+// command line on Windows, so an untrusted argument has no safe way to
+// sit in it - this value ultimately traces back to wherever the model
+// decided to edit, which is not something to trust blindly).
 let result;
 try {
-  result = JSON.parse(runHubServer(["check-file", filePath], { cwd: repoRoot }));
+  result = JSON.parse(runHubServer(["check-file"], { cwd: repoRoot, env: { ...process.env, HUB_CHECK_FILE_PATH: filePath } }));
 } catch {
   // hub-server missing, not a repo, or slow - never block an edit over it.
   process.exit(0);

@@ -58,9 +58,21 @@ try {
   // committed to this file 4 minutes ago and you're about to edit it on a
   // stale mental model.
   if (args[0] === "check-file") {
-    const filePath = args[1];
+    // Hooks pass the path via HUB_CHECK_FILE_PATH rather than argv - it's
+    // the one value here that ultimately traces back to an LLM-influenced
+    // tool call (an Edit/Write file_path, or an Antigravity toolCall arg),
+    // and on Windows a hook has to invoke this CLI through cmd.exe (npm's
+    // bin shim is a .cmd file, which Node cannot exec without a shell).
+    // cmd.exe re-parses its OWN command line - quoting an argument doesn't
+    // stop `%VAR%` expansion or, with the wrong escaping, `&`/`|` command
+    // chaining - so an untrusted value has no safe way to sit in that
+    // command line at all. An environment variable's value is never
+    // re-parsed by cmd.exe, so this sidesteps the problem instead of
+    // trying to out-escape it. argv is kept as a fallback purely for
+    // someone running this by hand in a real shell they already control.
+    const filePath = process.env.HUB_CHECK_FILE_PATH || args[1];
     if (!filePath) {
-      console.error("Usage: hub-server check-file <path>");
+      console.error("Usage: hub-server check-file <path>  (or set HUB_CHECK_FILE_PATH)");
       process.exit(1);
     }
     const result = checkFileBeforeEdit(startDir(), filePath);

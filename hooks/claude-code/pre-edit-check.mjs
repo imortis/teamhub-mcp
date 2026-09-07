@@ -78,10 +78,13 @@ if (!activeWithinMs(gitRootOf(process.cwd()), GATE_WINDOW_MS)) {
   process.exit(0);
 }
 
-// Advisory: fast per-file freshness check, non-blocking.
+// Advisory: fast per-file freshness check, non-blocking. filePath goes
+// through the environment, not argv - see the comment in src/index.ts's
+// check-file handler for why (cmd.exe re-parses its own command line on
+// Windows, so an untrusted argument has no safe way to sit in it).
 let result;
 try {
-  const output = runHubServer(["check-file", filePath]);
+  const output = runHubServer(["check-file"], { env: { ...process.env, HUB_CHECK_FILE_PATH: filePath } });
   result = JSON.parse(output);
 } catch {
   process.exit(0);
