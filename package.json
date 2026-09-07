@@ -1,6 +1,6 @@
 {
   "name": "teamhub-mcp",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "scripts": {
     "test": "node test/integration.mjs",
     "dev": "tsx watch src/index.ts",
@@ -42,9 +42,20 @@
   "keywords": [
     "mcp",
     "model-context-protocol",
+    "mcp-server",
     "ai-agents",
+    "ai-coding-agents",
+    "multi-agent",
     "team-coordination",
+    "agent-memory",
+    "context-sharing",
     "git",
-    "claude-code"
+    "git-native",
+    "claude-code",
+    "cursor",
+    "antigravity",
+    "opencode",
+    "developer-tools",
+    "task-management"
   ]
 }
